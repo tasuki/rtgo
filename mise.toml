@@ -1,0 +1,20 @@
+[tools]
+erlang = "28.2"
+rebar = "3.25.1"
+gleam = "1.13.0"
+watchexec = "2.3.2"
+
+[tasks."dev:server"]
+dir = "server"
+run = """
+watchexec --restart --verbose \
+  --wrap-process=session --exts=gleam --debounce=100ms \
+  -- gleam run
+"""
+
+[tasks."dev:client"]
+dir = "client"
+run = "gleam run -m lustre/dev start"
+
+[tasks.dev]
+depends = ["dev:server", "dev:client"]

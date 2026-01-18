@@ -1,0 +1,12 @@
+# Mise
+mise.local.toml
+
+# Gleam
+*.beam
+*.ez
+build/
+erl_crash.dump
+
+# Lustre
+client/.lustre/
+client/dist/
