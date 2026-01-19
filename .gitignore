@@ -10,3 +10,4 @@ erl_crash.dump
 # Lustre
 client/.lustre/
 client/dist/
+client/src/config.gleam

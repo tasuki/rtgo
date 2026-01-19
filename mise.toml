@@ -4,6 +4,13 @@ rebar = "3.25.1"
 gleam = "1.13.0"
 watchexec = "2.3.2"
 
+[env]
+APP_ENV = "dev"
+
+[tasks."client-config"]
+dir = "client"
+run = "cp config.${APP_ENV}.gleam src/config.gleam"
+
 [tasks."dev:server"]
 dir = "server"
 run = """
@@ -13,6 +20,7 @@ watchexec --restart --verbose \
 """
 
 [tasks."dev:client"]
+depends = ["client-config"]
 dir = "client"
 run = "gleam run -m lustre/dev start"
 
