@@ -21,9 +21,6 @@ Two players? Sure! Five players, why not?
 
 ## TODO random notes
 
-#FFF #0FC #CF0 #F80
-#333 #08F #85F #F3C
-
 https://openmoji.org/library/
 
 SSE for updates: https://github.com/rawhat/mist/blob/master/examples/eventz/src/eventz.gleam
