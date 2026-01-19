@@ -6,6 +6,7 @@ watchexec = "2.3.2"
 
 [env]
 APP_ENV = "dev"
+SERVER_PORT = 8000
 
 [tasks."client-config"]
 dir = "client"
