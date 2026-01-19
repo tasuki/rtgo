@@ -31,7 +31,7 @@ fn init(_) {
   #(Model(ping: None, server_url: server_url), ping_server(server_url))
 }
 
-fn decoder(start: Timestamp) {
+fn ping_decoder(start: Timestamp) {
   decode.success(Nil)
   |> decode.map(fn(_) { timestamp.difference(start, timestamp.system_time()) })
 }
@@ -39,7 +39,7 @@ fn decoder(start: Timestamp) {
 fn ping_server(server_url) -> Effect(Msg) {
   let start = timestamp.system_time()
   let url = server_url <> "/ping"
-  let handler = rsvp.expect_json(decoder(start), ServerResponded)
+  let handler = rsvp.expect_json(ping_decoder(start), ServerResponded)
   rsvp.get(url, handler)
 }
 
@@ -63,7 +63,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     PingRequested -> {
       #(model, ping_server(model.server_url))
     }
-    ServerResponded(duration_res) ->{
+    ServerResponded(duration_res) -> {
       #(
         Model(..model, ping: option.from_result(duration_res)),
         wait(1000, PingRequested),

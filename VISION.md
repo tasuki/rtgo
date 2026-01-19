@@ -25,3 +25,7 @@ Two players? Sure! Five players, why not?
 #333 #08F #85F #F3C
 
 https://openmoji.org/library/
+
+SSE for updates: https://github.com/rawhat/mist/blob/master/examples/eventz/src/eventz.gleam
+
+Eventually record the games: use a sidecar recorder Process.
