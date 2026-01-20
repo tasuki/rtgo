@@ -1,3 +1,4 @@
+import board
 import config
 import gleam/dynamic/decode
 import gleam/int
@@ -6,7 +7,9 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/time/duration.{type Duration}
 import gleam/time/timestamp.{type Timestamp}
+import go
 import lustre
+import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
@@ -16,19 +19,22 @@ import rsvp
 
 pub fn main() {
   let app = lustre.application(init, update, view)
-  let assert Ok(_) = lustre.start(app, "#app", Nil)
+  let assert Ok(_) = lustre.start(app, "body", Nil)
   Nil
 }
 
 // Model
 
 pub type Model {
-  Model(ping: Option(Duration), server_url: String)
+  Model(ping: Option(Duration), server_url: String, game: go.Game)
 }
 
 fn init(_) {
   let assert Ok(server_url) = config.server_urls |> list.first
-  #(Model(ping: None, server_url: server_url), ping_server(server_url))
+  #(
+    Model(ping: None, server_url: server_url, game: go.new_game(13)),
+    ping_server(server_url),
+  )
 }
 
 fn ping_decoder(start: Timestamp) {
@@ -74,15 +80,42 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 
 // View
 
-fn duration_in_ms(d: Duration) -> Int {
+fn duration_in_s(d: Duration) -> #(String, String) {
   let #(seconds, nanoseconds) = duration.to_seconds_and_nanoseconds(d)
-  seconds * 1000 + nanoseconds / 1_000_000
+  let tenths = { nanoseconds + 50_000_000 } / 100_000_000
+  let str = int.to_string(seconds) <> "." <> int.to_string(tenths)
+  case seconds, tenths {
+    0, 0 -> #("green", str)
+    0, 1 -> #("yellow", str)
+    _, _ -> #("orange", str)
+  }
+}
+
+fn view_ping(ping: Option(Duration)) -> #(String, String) {
+  case ping {
+    Some(ping) -> duration_in_s(ping)
+    None -> #("red", "d/c")
+  }
+}
+
+fn view_menu_item(class: String, text: String, tooltip: String) {
+  html.div([attribute.class("item")], [
+    html.div([attribute.class("icon"), attribute.class(class)], [
+      html.text(text),
+      html.span([attribute.class("tooltip")], [html.text(" " <> tooltip)]),
+    ]),
+  ])
 }
 
 fn view(model: Model) -> Element(Msg) {
-  case model.ping {
-    Some(ping) ->
-      html.h1([], [html.text(duration_in_ms(ping) |> int.to_string)])
-    None -> html.h1([], [html.text("disconnected")])
-  }
+  let #(ping_class, ping) = view_ping(model.ping)
+  html.div([attribute.id("container")], [
+    html.div([attribute.id("menu")], [
+      view_menu_item("", "!", "menu"),
+      view_menu_item("ping " <> ping_class, ping, ""),
+    ]),
+    html.div([attribute.id("board-container")], [
+      html.div([attribute.id("board")], [board.view(model.game)]),
+    ]),
+  ])
 }

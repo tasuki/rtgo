@@ -6,15 +6,15 @@ import player.{type Player}
 pub type Point =
   #(Int, Int)
 
-pub type Board =
+pub type Stones =
   Dict(Point, Player)
 
 pub type Game {
   Game(
-    size: Int,
-    board: Board,
+    board_size: Int,
+    stones: Stones,
     captures: Dict(Player, Int),
-    history: Set(Board),
+    history: Set(Stones),
   )
 }
 
@@ -25,21 +25,26 @@ pub type MoveError {
   Ko
 }
 
-pub fn new_game(size: Int) -> Game {
-  Game(size: size, board: dict.new(), captures: dict.new(), history: set.new())
+pub fn new_game(board_size: Int) -> Game {
+  Game(
+    board_size: board_size,
+    stones: dict.new(),
+    captures: dict.new(),
+    history: set.new(),
+  )
 }
 
 pub fn play(game: Game, player: Player, point: Point) -> Result(Game, MoveError) {
-  use <- check_bounds(game.size, point)
-  use <- check_empty(game.board, point)
+  use <- check_bounds(game.board_size, point)
+  use <- check_empty(game.stones, point)
 
-  let candidate_board = dict.insert(game.board, point, player)
+  let candidate_stones = dict.insert(game.stones, point, player)
 
-  let #(board_after_captures, captured_count) =
-    process_captures(candidate_board, point, player)
+  let #(stones_after_captures, captured_count) =
+    process_captures(candidate_stones, point, player)
 
-  use <- check_suicide(board_after_captures, point, player)
-  use <- check_ko(game.history, board_after_captures)
+  use <- check_suicide(stones_after_captures, point, player)
+  use <- check_ko(game.history, stones_after_captures)
 
   let new_captures =
     dict.insert(game.captures, player, case dict.get(game.captures, player) {
@@ -50,40 +55,48 @@ pub fn play(game: Game, player: Player, point: Point) -> Result(Game, MoveError)
   Ok(
     Game(
       ..game,
-      board: board_after_captures,
+      stones: stones_after_captures,
       captures: new_captures,
-      history: set.insert(game.history, board_after_captures),
+      history: set.insert(game.history, stones_after_captures),
     ),
   )
 }
 
-fn check_bounds(size: Int, point: Point, next: fn() -> Result(a, MoveError)) {
+fn check_bounds(
+  board_size: Int,
+  point: Point,
+  next: fn() -> Result(a, MoveError),
+) {
   let #(x, y) = point
-  case x >= 0 && x < size && y >= 0 && y < size {
+  case x >= 0 && x < board_size && y >= 0 && y < board_size {
     True -> next()
     False -> Error(OutOfBounds)
   }
 }
 
-fn check_empty(board: Board, point: Point, next: fn() -> Result(a, MoveError)) {
-  case dict.has_key(board, point) {
+fn check_empty(stones: Stones, point: Point, next: fn() -> Result(a, MoveError)) {
+  case dict.has_key(stones, point) {
     False -> next()
     True -> Error(Occupied)
   }
 }
 
-fn process_captures(board: Board, move: Point, player: Player) -> #(Board, Int) {
-  list.fold(get_neighbors(move), #(board, 0), fn(acc, neighbor) {
-    let #(current_board, count) = acc
-    case dict.get(current_board, neighbor) {
+fn process_captures(
+  stones: Stones,
+  move: Point,
+  player: Player,
+) -> #(Stones, Int) {
+  list.fold(get_neighbors(move), #(stones, 0), fn(acc, neighbor) {
+    let #(current_stones, count) = acc
+    case dict.get(current_stones, neighbor) {
       Ok(p) if p != player -> {
-        let group = get_group(current_board, neighbor, player)
-        case has_liberties(current_board, group) {
+        let group = get_group(current_stones, neighbor, player)
+        case has_liberties(current_stones, group) {
           True -> acc
           False -> {
-            let new_board =
-              set.fold(group, current_board, fn(b, p) { dict.delete(b, p) })
-            #(new_board, count + set.size(group))
+            let new_stones =
+              set.fold(group, current_stones, fn(b, p) { dict.delete(b, p) })
+            #(new_stones, count + set.size(group))
           }
         }
       }
@@ -93,24 +106,24 @@ fn process_captures(board: Board, move: Point, player: Player) -> #(Board, Int) 
 }
 
 fn check_suicide(
-  board: Board,
+  stones: Stones,
   point: Point,
   player: Player,
   next: fn() -> Result(a, MoveError),
 ) {
-  let group = get_group(board, point, player)
-  case has_liberties(board, group) {
+  let group = get_group(stones, point, player)
+  case has_liberties(stones, group) {
     True -> next()
     False -> Error(Suicide)
   }
 }
 
 fn check_ko(
-  history: Set(Board),
-  board: Board,
+  history: Set(Stones),
+  stones: Stones,
   next: fn() -> Result(a, MoveError),
 ) {
-  case set.contains(history, board) {
+  case set.contains(history, stones) {
     False -> next()
     True -> Error(Ko)
   }
@@ -121,12 +134,12 @@ fn get_neighbors(point: Point) -> List(Point) {
   [#(x + 1, y), #(x - 1, y), #(x, y + 1), #(x, y - 1)]
 }
 
-fn get_group(board: Board, start: Point, color: Player) -> Set(Point) {
-  flood_fill(board, [start], color, set.new())
+fn get_group(stones: Stones, start: Point, color: Player) -> Set(Point) {
+  flood_fill(stones, [start], color, set.new())
 }
 
 fn flood_fill(
-  board: Board,
+  stones: Stones,
   queue: List(Point),
   color: Player,
   visited: Set(Point),
@@ -135,14 +148,14 @@ fn flood_fill(
     [] -> visited
     [curr, ..rest] -> {
       case set.contains(visited, curr) {
-        True -> flood_fill(board, rest, color, visited)
+        True -> flood_fill(stones, rest, color, visited)
         False -> {
           let matching_neighbors =
             list.filter(get_neighbors(curr), fn(n) {
-              dict.get(board, n) == Ok(color)
+              dict.get(stones, n) == Ok(color)
             })
           flood_fill(
-            board,
+            stones,
             list.append(rest, matching_neighbors),
             color,
             set.insert(visited, curr),
@@ -153,8 +166,8 @@ fn flood_fill(
   }
 }
 
-fn has_liberties(board: Board, group: Set(Point)) -> Bool {
+fn has_liberties(stones: Stones, group: Set(Point)) -> Bool {
   use point <- list.any(set.to_list(group))
   use neighbor <- list.any(get_neighbors(point))
-  !dict.has_key(board, neighbor)
+  !dict.has_key(stones, neighbor)
 }
