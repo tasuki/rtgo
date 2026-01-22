@@ -1,3 +1,4 @@
+import gleam/dynamic/decode
 import gleam/list
 import gleam/result
 import lustre/attribute
@@ -7,6 +8,7 @@ import lustre/event
 import player
 import plinth/javascript/storage
 import rsvp
+import ywt
 
 // Model
 
@@ -23,27 +25,40 @@ fn storage() {
   local_storage
 }
 
-fn get_name() {
-  storage.get_item(storage(), "name")
+fn storage_get_login() {
+  storage.get_item(storage(), "login")
 }
 
-pub fn set_name(name: String) {
-  storage.set_item(storage(), "name", name)
+pub fn decode_login_jwt(jwt: String) {
+  let decoder = {
+    use sub <- decode.field("sub", decode.string)
+    use exp <- decode.field("exp", decode.int)
+    decode.success(#(sub, exp))
+  }
+  ywt.decode_unsafely_without_validation(jwt, decoder)
+}
+
+pub fn storage_set_login(jwt: String) {
+  storage.set_item(storage(), "login", jwt)
 }
 
 pub fn log_in(server_url: String, username: String, msg) -> Effect(msg) {
-  let url = server_url <> "/log_in"
-  let handler = rsvp.expect_json(player.log_in_response_decoder(), msg)
   rsvp.post(
-    url,
+    server_url <> "/log_in",
     player.log_in_request_to_json(player.LogInRequest(username)),
-    handler,
+    rsvp.expect_json(player.log_in_response_decoder(), msg),
   )
 }
 
 pub fn default_login(server_url: String, msg) {
-  case get_name() {
-    Ok(name) -> #(VerifyingName(name), log_in(server_url, name, msg))
+  case storage_get_login() {
+    Ok(jwt) ->
+      case decode_login_jwt(jwt) {
+        Ok(#(name, _exp)) -> {
+          #(VerifyingName(name), log_in(server_url, jwt, msg))
+        }
+        Error(_) -> #(PickingName, effect.none())
+      }
     Error(_) -> #(PickingName, effect.none())
   }
 }

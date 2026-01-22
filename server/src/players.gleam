@@ -5,15 +5,21 @@ import gleam/otp/actor
 import gleam/string
 import gleam/time/duration
 import gleam/time/timestamp.{type Timestamp}
-import player
 import log
+import player
+import ywt
+import ywt/claim
+import ywt/sign_key.{type SignKey}
 
 type State {
-  State(users: Dict(String, Timestamp))
+  State(sign_key: SignKey, users: Dict(String, Timestamp))
 }
 
 pub type Message {
-  LogIn(username: String, client: Subject(Result(player.LogInResponse, player.LogInFailedResponse)))
+  LogIn(
+    username: String,
+    client: Subject(Result(player.LogInResponse, player.LogInFailedResponse)),
+  )
   Prune(self: Subject(Message))
 }
 
@@ -39,11 +45,20 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
           actor.continue(state)
         }
         False -> {
-          let new_expiry = timestamp.add(now, duration.seconds(10))
+          let new_expiry: Timestamp = timestamp.add(now, duration.seconds(10))
           let new_users = dict.insert(state.users, username, new_expiry)
+          let claims = [
+            claim.subject(username, []),
+            claim.expires_at(
+              max_age: duration.seconds(10),
+              leeway: duration.minutes(5),
+            ),
+          ]
+          let jwt = ywt.encode([], claims, state.sign_key)
           log.info("Logged in as: " <> username)
-          process.send(client, Ok(player.LogInResponse(username)))
-          actor.continue(State(users: new_users))
+          log.debug("Accompanying JWT: " <> jwt)
+          process.send(client, Ok(player.LogInResponse(jwt)))
+          actor.continue(State(..state, users: new_users))
         }
       }
     }
@@ -71,14 +86,14 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       }
 
       process.send_after(self, 1000, Prune(self))
-      actor.continue(State(users: new_users))
+      actor.continue(State(..state, users: new_users))
     }
   }
 }
 
-pub fn start() -> Subject(Message) {
+pub fn start(sign_key: SignKey) -> Subject(Message) {
   let assert Ok(actor) =
-    actor.new(State(users: dict.new()))
+    actor.new(State(sign_key: sign_key, users: dict.new()))
     |> actor.on_message(handle_message)
     |> actor.start
   let subject = actor.data

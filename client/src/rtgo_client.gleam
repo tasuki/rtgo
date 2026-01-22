@@ -1,4 +1,3 @@
-import gleam/string
 import board
 import config
 import gleam/dynamic/decode
@@ -8,6 +7,7 @@ import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
+import gleam/string
 import gleam/time/duration.{type Duration}
 import gleam/time/timestamp.{type Timestamp}
 import gleam/uri.{type Uri}
@@ -133,15 +133,28 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, ping: option.from_result(duration_res)),
       wait(1000, PingRequested),
     )
-    LogIn(name) ->
-      #(model, player_info.log_in(model.server_url, name, LoggedInResponse))
+    LogIn(name) -> #(
+      model,
+      player_info.log_in(model.server_url, name, LoggedInResponse),
+    )
     LoggedInResponse(Ok(lir)) -> {
-      let name = lir.logged_in_as
-      let _ = player_info.set_name(name)
-      #(
-        Model(..model, player: player_info.LoggedIn(name)),
-        modem.push(route_to_str(CreateJoinGame), None, None),
-      )
+      case player_info.decode_login_jwt(lir.jwt) {
+        Ok(jwt) -> {
+          let _ = player_info.storage_set_login(lir.jwt)
+          let #(name, _exp) = jwt
+          #(
+            Model(..model, player: player_info.LoggedIn(name)),
+            modem.push(route_to_str(CreateJoinGame), None, None),
+          )
+        }
+        Error(e) -> #(
+          Model(
+            ..model,
+            player: player_info.OtherError("Error: " <> string.inspect(e)),
+          ),
+          effect.none(),
+        )
+      }
     }
     LoggedInResponse(Error(e)) -> {
       let player_info = case e {
@@ -152,13 +165,12 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           )
         rsvp.HttpError(res) if res.status == 409 -> {
           case json.parse(res.body, player.log_in_failed_response_decoder()) {
-            Ok(lifr) ->
-              player_info.NameAlreadyTaken(lifr.name_taken)
-            Error(e) ->
-              player_info.OtherError("Error: " <> string.inspect(e))
+            Ok(lifr) -> player_info.NameAlreadyTaken(lifr.name_taken)
+            Error(e) -> player_info.OtherError("Error: " <> string.inspect(e))
           }
         }
-        other_error -> player_info.OtherError("Other error: " <> string.inspect(other_error))
+        other_error ->
+          player_info.OtherError("Other error: " <> string.inspect(other_error))
       }
       #(Model(..model, player: player_info), effect.none())
     }

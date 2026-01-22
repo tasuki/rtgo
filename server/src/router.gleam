@@ -1,6 +1,6 @@
 import gleam/dynamic/decode
-import gleam/http.{Get, Post}
 import gleam/erlang/process
+import gleam/http.{Get, Post}
 import gleam/json
 import player
 import players
