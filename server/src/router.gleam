@@ -1,4 +1,5 @@
 import gleam/dynamic/decode
+import gleam/http.{Get, Post}
 import gleam/erlang/process
 import gleam/json
 import player
@@ -12,10 +13,10 @@ pub fn handle(
 ) -> Response {
   use req <- allow_cors(req)
 
-  case wisp.path_segments(req) {
-    [] -> json_response(200, [])
-    ["ping"] -> json_response(200, [])
-    ["log_in"] -> {
+  case req.method, wisp.path_segments(req) {
+    Get, [] -> json_response(200, [])
+    Get, ["ping"] -> json_response(200, [])
+    Post, ["log_in"] -> {
       use req_json <- wisp.require_json(req)
       let decoder = player.log_in_request_decoder()
 
@@ -26,13 +27,13 @@ pub fn handle(
           case players.try_login(players_actor, lir.name) {
             Ok(lir) ->
               json_response_obj(200, player.log_in_response_to_json(lir))
-            Error(_) ->
-              json_response(409, [#("msg", json.string("Player already active"))])
+            Error(err) ->
+              json_response_obj(409, player.log_in_failed_response_to_json(err))
           }
         }
       }
     }
-    _ ->
+    _, _ ->
       json_response(404, [
         #("msg", json.string("404: Not Found")),
       ])

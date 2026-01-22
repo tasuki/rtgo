@@ -64,3 +64,22 @@ pub fn log_in_response_decoder() -> decode.Decoder(LogInResponse) {
   use logged_in_as <- decode.field("logged_in_as", decode.string)
   decode.success(LogInResponse(logged_in_as:))
 }
+
+// Log in failed response
+
+pub type LogInFailedResponse {
+  LogInFailedResponse(name_taken: String)
+}
+
+pub fn log_in_failed_response_to_json(log_in_failed_response: LogInFailedResponse) -> json.Json {
+  let LogInFailedResponse(name_taken:) = log_in_failed_response
+  json.object([
+    #("name_taken", json.string(name_taken)),
+  ])
+}
+
+pub fn log_in_failed_response_decoder() -> decode.Decoder(LogInFailedResponse) {
+  use name_taken <- decode.field("name_taken", decode.string)
+  decode.success(LogInFailedResponse(name_taken:))
+}
+

@@ -151,13 +151,12 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
             <> "or our server is down. Who knows!",
           )
         rsvp.HttpError(res) if res.status == 409 -> {
-          let name =
-            json.parse(
-              from: res.body,
-              using: decode.field("name", decode.string, decode.success),
-            )
-            |> result.unwrap(or: "<unknown>")
-          player_info.NameAlreadyTaken(name)
+          case json.parse(res.body, player.log_in_failed_response_decoder()) {
+            Ok(lifr) ->
+              player_info.NameAlreadyTaken(lifr.name_taken)
+            Error(e) ->
+              player_info.OtherError("Error: " <> string.inspect(e))
+          }
         }
         other_error -> player_info.OtherError("Other error: " <> string.inspect(other_error))
       }

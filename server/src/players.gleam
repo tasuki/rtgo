@@ -13,7 +13,7 @@ type State {
 }
 
 pub type Message {
-  LogIn(username: String, client: Subject(Result(player.LogInResponse, Nil)))
+  LogIn(username: String, client: Subject(Result(player.LogInResponse, player.LogInFailedResponse)))
   Prune(self: Subject(Message))
 }
 
@@ -35,7 +35,7 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       case is_taken {
         True -> {
           log.info("Already taken: " <> username)
-          process.send(client, Error(Nil))
+          process.send(client, Error(player.LogInFailedResponse(username)))
           actor.continue(state)
         }
         False -> {
