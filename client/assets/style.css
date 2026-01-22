@@ -25,8 +25,8 @@ html, body { font-family: "Recursive Mono"; margin: 0; height: 100%; }
 #menu .icon:hover .tooltip { display: inline; }
 #menu .ping { font-size: 8px; }
 #menu .ping:hover { font-size: 16px; }
-#menu .icon.green { border-color: #0F0; }
-#menu .icon.yellow { border-color: #FF0; }
+#menu .icon.green { border-color: #9F0; }
+#menu .icon.yellow { border-color: #FC0; }
 #menu .icon.orange { border-color: #F80; }
 #menu .icon.red { border-color: #F00; }
 @media screen and (min-aspect-ratio: 1/1) {
