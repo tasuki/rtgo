@@ -113,7 +113,7 @@ pub type Msg {
   RouteChanged(Route)
   PingRequested
   PingResponded(Result(Duration, rsvp.Error))
-  LogIn(String)
+  Register(String)
   LoggedInResponse(Result(player.LogInResponse, rsvp.Error))
 }
 
@@ -133,10 +133,12 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       Model(..model, ping: option.from_result(duration_res)),
       wait(1000, PingRequested),
     )
-    LogIn(name) -> #(
+
+    Register(name) -> #(
       model,
-      player_info.log_in(model.server_url, name, LoggedInResponse),
+      player_info.register(model.server_url, name, LoggedInResponse),
     )
+
     LoggedInResponse(Ok(lir)) -> {
       case player_info.decode_login_jwt(lir.jwt) {
         Ok(jwt) -> {
@@ -156,23 +158,50 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         )
       }
     }
+
     LoggedInResponse(Error(e)) -> {
-      let player_info = case e {
-        rsvp.NetworkError ->
+      let #(player_info, eff) = case e {
+        rsvp.NetworkError -> #(
           player_info.OtherError(
             "Network error! Perhaps you're offline, your DNS is broken, "
             <> "or our server is down. Who knows!",
-          )
-        rsvp.HttpError(res) if res.status == 409 -> {
-          case json.parse(res.body, player.log_in_failed_response_decoder()) {
-            Ok(lifr) -> player_info.NameAlreadyTaken(lifr.name_taken)
-            Error(e) -> player_info.OtherError("Error: " <> string.inspect(e))
+          ),
+          effect.none(),
+        )
+        rsvp.HttpError(res) if res.status == 400 -> {
+          case player_info.desired_name(model.player) {
+            Ok(dn) -> #(
+              player_info.OtherError(
+                "Login failed, trying to re-register you...",
+              ),
+              player_info.register(model.server_url, dn, LoggedInResponse),
+            )
+            Error(_) -> #(
+              player_info.OtherError("Login failed..."),
+              effect.none(),
+            )
           }
         }
-        other_error ->
-          player_info.OtherError("Other error: " <> string.inspect(other_error))
+        rsvp.HttpError(res) if res.status == 409 -> {
+          #(
+            case
+              json.parse(
+                res.body,
+                player.registration_failed_response_decoder(),
+              )
+            {
+              Ok(rf) -> player_info.NameAlreadyTaken(rf.already_taken)
+              Error(e) -> player_info.OtherError("Error: " <> string.inspect(e))
+            },
+            effect.none(),
+          )
+        }
+        other_error -> #(
+          player_info.OtherError("Other error: " <> string.inspect(other_error)),
+          effect.none(),
+        )
       }
-      #(Model(..model, player: player_info), effect.none())
+      #(Model(..model, player: player_info), eff)
     }
   }
 }
@@ -214,7 +243,7 @@ fn view(model: Model) -> Element(Msg) {
       view_menu_item("ping " <> ping_class, ping, ""),
     ]),
     case model.page {
-      PlayerInfo -> player_info.view(model.player, LogIn)
+      PlayerInfo -> player_info.view(model.player, Register)
       CreateJoinGame -> html.div([], [html.text("create join game")])
       Play(_) ->
         html.div([attribute.id("board-container")], [

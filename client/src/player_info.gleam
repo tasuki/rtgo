@@ -1,4 +1,3 @@
-import gleam/dynamic/decode
 import gleam/list
 import gleam/result
 import lustre/attribute
@@ -20,9 +19,22 @@ pub type PlayerStatus {
   LoggedIn(String)
 }
 
+pub fn desired_name(ps: PlayerStatus) -> Result(String, Nil) {
+  case ps {
+    NameAlreadyTaken(n) -> Ok(n)
+    VerifyingName(n) -> Ok(n)
+    LoggedIn(n) -> Ok(n)
+    _ -> Error(Nil)
+  }
+}
+
 fn storage() {
   let assert Ok(local_storage) = storage.local()
   local_storage
+}
+
+pub fn storage_set_login(jwt: String) {
+  storage.set_item(storage(), "login", jwt)
 }
 
 fn storage_get_login() {
@@ -30,22 +42,21 @@ fn storage_get_login() {
 }
 
 pub fn decode_login_jwt(jwt: String) {
-  let decoder = {
-    use sub <- decode.field("sub", decode.string)
-    use exp <- decode.field("exp", decode.int)
-    decode.success(#(sub, exp))
-  }
-  ywt.decode_unsafely_without_validation(jwt, decoder)
+  ywt.decode_unsafely_without_validation(jwt, player.jwt_decoder())
 }
 
-pub fn storage_set_login(jwt: String) {
-  storage.set_item(storage(), "login", jwt)
+pub fn register(server_url: String, username: String, msg) -> Effect(msg) {
+  rsvp.post(
+    server_url <> "/register",
+    player.registration_request_to_json(player.RegistrationRequest(username)),
+    rsvp.expect_json(player.log_in_response_decoder(), msg),
+  )
 }
 
-pub fn log_in(server_url: String, username: String, msg) -> Effect(msg) {
+pub fn log_in(server_url: String, jwt: String, msg) -> Effect(msg) {
   rsvp.post(
     server_url <> "/log_in",
-    player.log_in_request_to_json(player.LogInRequest(username)),
+    player.log_in_request_to_json(player.LogInRequest(jwt)),
     rsvp.expect_json(player.log_in_response_decoder(), msg),
   )
 }
@@ -71,7 +82,7 @@ pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
     submit_name_msg(name)
   }
 
-  let login_form =
+  let registration_form =
     html.form([event.on_submit(msg_handler)], [
       html.div([], [html.text("Choose your name...")]),
       html.input([attribute.name("username")]),
@@ -79,7 +90,7 @@ pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
     ])
 
   let inside = case player_status {
-    PickingName -> login_form
+    PickingName -> registration_form
     VerifyingName(verifying_name) ->
       html.div([], [html.text("Trying to log you in as " <> verifying_name)])
     NameAlreadyTaken(taken_name) ->
@@ -87,14 +98,14 @@ pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
         html.div([], [
           html.text(
             "Oh noes! "
-            <> "Someone is currently logged in as "
+            <> "Someone is currently registered in as "
             <> taken_name
             <> ". "
-            <> "Try another name or wait until they go offline.",
+            <> "Try another name or wait until they go away.",
           ),
         ]),
         html.br([]),
-        login_form,
+        registration_form,
       ])
     OtherError(err) ->
       html.div([], [
@@ -102,7 +113,7 @@ pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
           html.text("An error occurred: " <> err),
         ]),
         html.br([]),
-        login_form,
+        registration_form,
       ])
     LoggedIn(name) -> html.div([], [html.text("Logged in as " <> name)])
   }

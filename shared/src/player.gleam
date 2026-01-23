@@ -26,25 +26,67 @@ pub fn color_to_str(color: Color) {
 }
 
 pub type Player {
-  Player(name: String, color: Color)
+  Player(username: String, color: Color)
+}
+
+// Registration request
+
+pub type RegistrationRequest {
+  RegistrationRequest(username: String)
+}
+
+pub fn registration_request_to_json(
+  registration_request: RegistrationRequest,
+) -> json.Json {
+  let RegistrationRequest(username:) = registration_request
+  json.object([
+    #("username", json.string(username)),
+  ])
+}
+
+pub fn registration_request_decoder() -> decode.Decoder(RegistrationRequest) {
+  use username <- decode.field("username", decode.string)
+  decode.success(RegistrationRequest(username:))
+}
+
+// Registration failed response
+
+pub type RegistrationFailedResponse {
+  RegistrationFailedResponse(already_taken: String)
+}
+
+pub fn registration_failed_response_to_json(
+  registration_failed_response: RegistrationFailedResponse,
+) -> json.Json {
+  let RegistrationFailedResponse(already_taken:) = registration_failed_response
+  json.object([
+    #("already_taken", json.string(already_taken)),
+  ])
+}
+
+pub fn registration_failed_response_decoder() -> decode.Decoder(
+  RegistrationFailedResponse,
+) {
+  use already_taken <- decode.field("already_taken", decode.string)
+  decode.success(RegistrationFailedResponse(already_taken:))
 }
 
 // Log in request
 
 pub type LogInRequest {
-  LogInRequest(name: String)
+  LogInRequest(jwt: String)
 }
 
 pub fn log_in_request_to_json(log_in_request: LogInRequest) -> json.Json {
-  let LogInRequest(name:) = log_in_request
+  let LogInRequest(jwt:) = log_in_request
   json.object([
-    #("name", json.string(name)),
+    #("jwt", json.string(jwt)),
   ])
 }
 
 pub fn log_in_request_decoder() -> decode.Decoder(LogInRequest) {
-  use name <- decode.field("name", decode.string)
-  decode.success(LogInRequest(name:))
+  use jwt <- decode.field("jwt", decode.string)
+  decode.success(LogInRequest(jwt:))
 }
 
 // Log in response
@@ -65,22 +107,28 @@ pub fn log_in_response_decoder() -> decode.Decoder(LogInResponse) {
   decode.success(LogInResponse(jwt:))
 }
 
+pub fn jwt_decoder() {
+  use sub <- decode.field("sub", decode.string)
+  use exp <- decode.field("exp", decode.int)
+  decode.success(#(sub, exp))
+}
+
 // Log in failed response
 
 pub type LogInFailedResponse {
-  LogInFailedResponse(name_taken: String)
+  LogInFailedResponse(msg: String)
 }
 
 pub fn log_in_failed_response_to_json(
   log_in_failed_response: LogInFailedResponse,
 ) -> json.Json {
-  let LogInFailedResponse(name_taken:) = log_in_failed_response
+  let LogInFailedResponse(msg:) = log_in_failed_response
   json.object([
-    #("name_taken", json.string(name_taken)),
+    #("msg", json.string(msg)),
   ])
 }
 
 pub fn log_in_failed_response_decoder() -> decode.Decoder(LogInFailedResponse) {
-  use name_taken <- decode.field("name_taken", decode.string)
-  decode.success(LogInFailedResponse(name_taken:))
+  use msg <- decode.field("msg", decode.string)
+  decode.success(LogInFailedResponse(msg:))
 }
