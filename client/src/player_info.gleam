@@ -118,5 +118,5 @@ pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
     LoggedIn(name) -> html.div([], [html.text("Logged in as " <> name)])
   }
 
-  html.div([attribute.id("help")], [inside])
+  html.div([attribute.id("page-container")], [inside])
 }

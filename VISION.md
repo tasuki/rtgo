@@ -25,4 +25,7 @@ https://openmoji.org/library/
 
 SSE for updates: https://github.com/rawhat/mist/blob/master/examples/eventz/src/eventz.gleam
 
+    echo '{"id":"test","boardXSize":19,"boardYSize":19,"rules":"tromp-taylor","moves":[["W","Q16"],["W","D4"],["W","C3"]], "maxVisits":1}' | ./katago analysis -model kata1-b6c96-s175395328-d26788732.txt.gz -config analysis_example.cfg
+
 Eventually record the games: use a sidecar recorder Process.
+

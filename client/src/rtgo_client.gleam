@@ -40,7 +40,7 @@ pub type Route {
 
 pub type Model {
   Model(
-    page: Route,
+    route: Route,
     player: player_info.PlayerStatus,
     ping: Option(Duration),
     server_url: String,
@@ -81,7 +81,7 @@ fn init(_) {
 
   #(
     Model(
-      page: route,
+      route: route,
       player: player_status,
       ping: None,
       server_url: server_url,
@@ -127,7 +127,7 @@ pub fn wait(milliseconds: Int, msg: msg) -> Effect(msg) {
 
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   case msg {
-    RouteChanged(_) -> #(model, effect.none())
+    RouteChanged(route) -> #(Model(..model, route: route), effect.none())
     PingRequested -> #(model, ping_server(model.server_url))
     PingResponded(duration_res) -> #(
       Model(..model, ping: option.from_result(duration_res)),
@@ -213,9 +213,10 @@ fn duration_in_s(d: Duration) -> #(String, String) {
   let tenths = { nanoseconds + 50_000_000 } / 100_000_000
   let str = int.to_string(seconds) <> "." <> int.to_string(tenths)
   case seconds, tenths {
-    0, 0 -> #("green", str)
-    0, 1 -> #("yellow", str)
-    _, _ -> #("orange", str)
+    0, t if t <= 1 -> #("green", str)
+    0, t if t <= 3 -> #("yellow", str)
+    0, _ -> #("orange", str)
+    _, _ -> #("red", str)
   }
 }
 
@@ -242,9 +243,12 @@ fn view(model: Model) -> Element(Msg) {
       view_menu_item("", "!", "menu"),
       view_menu_item("ping " <> ping_class, ping, ""),
     ]),
-    case model.page {
+    case model.route {
       PlayerInfo -> player_info.view(model.player, Register)
-      CreateJoinGame -> html.div([], [html.text("create join game")])
+      CreateJoinGame ->
+        html.div([attribute.id("page-container")], [
+          html.text("create join game"),
+        ])
       Play(_) ->
         html.div([attribute.id("board-container")], [
           html.div([attribute.id("board")], [board.view(model.game)]),

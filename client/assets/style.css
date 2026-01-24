@@ -20,7 +20,7 @@ html, body { font-family: "Recursive Mono"; margin: 0; height: 100%; }
 }
 
 #menu .icon { display: block; cursor: pointer; background-color: #222; color: #fff;
-  border: 2px solid #FFF; border-radius: 30px; line-height: 30px; width: 30px; height: 30px; text-align: center; }
+  border: 3px solid #FFF; border-radius: 30px; line-height: 30px; width: 30px; height: 30px; text-align: center; }
 #menu .icon .tooltip { display: none; }
 #menu .icon:hover .tooltip { display: inline; }
 #menu .ping { font-size: 8px; }
@@ -50,7 +50,7 @@ html, body { font-family: "Recursive Mono"; margin: 0; height: 100%; }
   background: #000A; color: #FFF; text-align: center; line-height: 100vmin;
   font-size: 80px; }
 
-#help { margin: 60px auto 0 auto; padding: 0 10px 10px 10px; max-width: 600px; }
+#page-container { margin: 60px auto 0 auto; padding: 0 10px 10px 10px; max-width: 600px; }
 @media screen and (min-aspect-ratio: 1/1) {
-  #help { margin: 0 auto 0 auto; }
+  #page-container { margin: 0 auto 0 auto; }
 }
