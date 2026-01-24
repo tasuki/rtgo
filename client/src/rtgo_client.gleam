@@ -1,4 +1,3 @@
-import board
 import config
 import gleam/dynamic/decode
 import gleam/int
@@ -11,16 +10,17 @@ import gleam/string
 import gleam/time/duration.{type Duration}
 import gleam/time/timestamp.{type Timestamp}
 import gleam/uri.{type Uri}
-import go
 import lustre
 import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
 import modem
-import player
-import player_info
 import rsvp
+import rtgo_client/board
+import rtgo_client/player_info
+import rtgo_shared/go
+import rtgo_shared/player
 
 // Main
 

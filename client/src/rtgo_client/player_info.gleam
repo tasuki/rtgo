@@ -4,9 +4,9 @@ import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element/html
 import lustre/event
-import player
 import plinth/javascript/storage
 import rsvp
+import rtgo_shared/player
 import ywt
 
 // Model

@@ -1,9 +1,9 @@
 import gleam/float
 import gleam/int
 import gleam/list
-import go
 import lustre/attribute
 import lustre/element/svg
+import rtgo_shared/go
 
 // View
 

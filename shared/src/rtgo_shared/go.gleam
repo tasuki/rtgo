@@ -1,7 +1,7 @@
 import gleam/dict.{type Dict}
 import gleam/list
 import gleam/set.{type Set}
-import player.{type Player}
+import rtgo_shared/player.{type Player}
 
 pub type Point =
   #(Int, Int)

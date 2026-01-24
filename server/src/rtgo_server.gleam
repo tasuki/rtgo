@@ -5,8 +5,8 @@ import gleam/int
 import gleam/result
 import logging
 import mist
-import players
-import router
+import rtgo_server/players
+import rtgo_server/router
 import wisp/wisp_mist
 import ywt/sign_key
 

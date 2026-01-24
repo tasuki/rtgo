@@ -5,8 +5,8 @@ import gleam/otp/actor
 import gleam/string
 import gleam/time/duration.{type Duration}
 import gleam/time/timestamp.{type Timestamp}
-import log
-import player
+import rtgo_server/log
+import rtgo_shared/player
 import ywt
 import ywt/claim
 import ywt/sign_key.{type SignKey}

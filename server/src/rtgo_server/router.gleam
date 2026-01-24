@@ -1,9 +1,9 @@
 import gleam/erlang/process
 import gleam/http.{Get, Post}
 import gleam/json
-import player
-import players
-import router_utils.{allow_cors, json_response, json_response_obj}
+import rtgo_server/players
+import rtgo_server/router_utils.{allow_cors, json_response, json_response_obj}
+import rtgo_shared/player
 import wisp.{type Request, type Response}
 
 pub fn handle(
