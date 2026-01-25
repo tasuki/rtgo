@@ -25,6 +25,10 @@ pub fn color_to_str(color: Color) {
   }
 }
 
+pub const all_colors = [Black, White, Cyan, Green, Orange, Pink, Purple, Blue]
+
+pub const two_player_colors = [Black, White]
+
 pub type Player {
   Player(username: String, color: Color)
 }
