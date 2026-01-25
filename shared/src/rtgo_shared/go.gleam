@@ -10,12 +10,7 @@ pub type Stones =
   Dict(Point, Player)
 
 pub type Game {
-  Game(
-    board_size: Int,
-    stones: Stones,
-    captures: Dict(Player, Int),
-    history: Set(Stones),
-  )
+  Game(board_size: Int, stones: Stones, history: Set(Stones))
 }
 
 pub type MoveError {
@@ -26,12 +21,7 @@ pub type MoveError {
 }
 
 pub fn new_game(board_size: Int) -> Game {
-  Game(
-    board_size: board_size,
-    stones: dict.new(),
-    captures: dict.new(),
-    history: set.new(),
-  )
+  Game(board_size: board_size, stones: dict.new(), history: set.new())
 }
 
 pub fn play(game: Game, player: Player, point: Point) -> Result(Game, MoveError) {
@@ -39,24 +29,15 @@ pub fn play(game: Game, player: Player, point: Point) -> Result(Game, MoveError)
   use <- check_empty(game.stones, point)
 
   let candidate_stones = dict.insert(game.stones, point, player)
-
-  let #(stones_after_captures, captured_count) =
-    process_captures(candidate_stones, point, player)
+  let stones_after_captures = process_captures(candidate_stones, point, player)
 
   use <- check_suicide(stones_after_captures, point, player)
   use <- check_ko(game.history, stones_after_captures)
-
-  let new_captures =
-    dict.insert(game.captures, player, case dict.get(game.captures, player) {
-      Ok(c) -> c + captured_count
-      Error(_) -> captured_count
-    })
 
   Ok(
     Game(
       ..game,
       stones: stones_after_captures,
-      captures: new_captures,
       history: set.insert(game.history, stones_after_captures),
     ),
   )
@@ -81,26 +62,17 @@ fn check_empty(stones: Stones, point: Point, next: fn() -> Result(a, MoveError))
   }
 }
 
-fn process_captures(
-  stones: Stones,
-  move: Point,
-  player: Player,
-) -> #(Stones, Int) {
-  list.fold(get_neighbors(move), #(stones, 0), fn(acc, neighbor) {
-    let #(current_stones, count) = acc
+fn process_captures(stones: Stones, move: Point, player: Player) -> Stones {
+  list.fold(get_neighbors(move), stones, fn(current_stones, neighbor) {
     case dict.get(current_stones, neighbor) {
       Ok(p) if p != player -> {
-        let group = get_group(current_stones, neighbor, player)
-        case has_liberties(current_stones, group) {
-          True -> acc
-          False -> {
-            let new_stones =
-              set.fold(group, current_stones, fn(b, p) { dict.delete(b, p) })
-            #(new_stones, count + set.size(group))
-          }
+        let group = get_group(stones, neighbor, p)
+        case has_liberties(stones, group) {
+          True -> current_stones
+          False -> set.fold(group, current_stones, dict.delete)
         }
       }
-      _ -> acc
+      _ -> current_stones
     }
   })
 }
