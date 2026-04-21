@@ -28,3 +28,10 @@ run = "gleam run -m lustre/dev start"
 
 [tasks.dev]
 depends = ["dev:server", "dev:client"]
+
+[tasks."test:shared"]
+dir = "shared"
+run = "gleam test"
+
+[tasks.test]
+depends = ["test:shared"]
