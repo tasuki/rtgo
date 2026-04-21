@@ -20,6 +20,8 @@ Create a `mise.local.toml` and define `SECRET_KEY_BASE`.
 mise run dev
 ```
 
+## Test
+
 ```
-gleam test
+mise run test
 ```
