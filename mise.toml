@@ -1,18 +1,13 @@
-[tools]
-erlang = "28.2"
-rebar = "3.25.1"
-gleam = "1.14.0"
-watchexec = "2.3.2"
-
 [env]
 APP_ENV = "dev"
 SERVER_PORT = 8000
 DEBUG_LEVEL = "DEBUG"
 
+[tasks."dev:create-image"]
+run = 'podman build -t docker.io/tasuki/pi-rtgo:latest -f Containerfile.dev .'
 [tasks."client-config"]
 dir = "client"
 run = "cp config.${APP_ENV}.gleam src/config.gleam"
-
 [tasks."dev:server"]
 dir = "server"
 run = """
@@ -20,18 +15,26 @@ watchexec --restart --verbose \
   --wrap-process=session --exts=gleam --debounce=100ms \
   -- gleam run
 """
-
 [tasks."dev:client"]
 depends = ["client-config"]
 dir = "client"
 run = "gleam run -m lustre/dev start"
-
 [tasks.dev]
 depends = ["dev:server", "dev:client"]
+
+[tasks.build]
+run = [
+  "cd shared && gleam build",
+  "cd server && gleam build",
+  """cd client \
+    && rm -f build/dev/javascript/lustre/priv \
+    && rm -f build/dev/javascript/lustre_dev_tools/priv \
+    && gleam build
+  """,
+]
 
 [tasks."test:shared"]
 dir = "shared"
 run = "gleam test"
-
 [tasks.test]
 depends = ["test:shared"]

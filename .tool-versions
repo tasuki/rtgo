@@ -1,0 +1,4 @@
+erlang 28.2
+rebar 3.25.1
+gleam 1.14.0
+watchexec 2.3.2

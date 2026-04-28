@@ -1,0 +1,9 @@
+FROM docker.io/tasuki/pi:latest
+
+WORKDIR /src
+
+COPY .tool-versions .
+RUN mise trust && mise install --verbose
+
+COPY . .
+RUN mise run build
