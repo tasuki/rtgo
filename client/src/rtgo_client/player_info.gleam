@@ -6,7 +6,8 @@ import lustre/element/html
 import lustre/event
 import plinth/javascript/storage
 import rsvp
-import rtgo_shared/player
+import rtgo_shared/auth
+import rtgo_shared/auth_api
 import ywt
 
 // Model
@@ -42,22 +43,20 @@ fn storage_get_login() {
 }
 
 pub fn decode_login_jwt(jwt: String) {
-  ywt.decode_unsafely_without_validation(jwt, player.jwt_decoder())
+  ywt.decode_unsafely_without_validation(jwt, auth.jwt_decoder())
 }
 
 pub fn register(server_url: String, username: String, msg) -> Effect(msg) {
-  rsvp.post(
-    server_url <> "/register",
-    player.registration_request_to_json(player.RegistrationRequest(username)),
-    rsvp.expect_json(player.log_in_response_decoder(), msg),
+  rsvp.send(
+    auth_api.register_request(server_url, username),
+    rsvp.expect_json(auth.log_in_response_decoder(), msg),
   )
 }
 
 pub fn log_in(server_url: String, jwt: String, msg) -> Effect(msg) {
-  rsvp.post(
-    server_url <> "/log_in",
-    player.log_in_request_to_json(player.LogInRequest(jwt)),
-    rsvp.expect_json(player.log_in_response_decoder(), msg),
+  rsvp.send(
+    auth_api.log_in_request(server_url, jwt),
+    rsvp.expect_json(auth.log_in_response_decoder(), msg),
   )
 }
 

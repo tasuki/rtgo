@@ -19,8 +19,8 @@ import modem
 import rsvp
 import rtgo_client/board
 import rtgo_client/player_info
+import rtgo_shared/auth
 import rtgo_shared/go
-import rtgo_shared/player
 
 // Main
 
@@ -114,7 +114,7 @@ pub type Msg {
   PingRequested
   PingResponded(Result(Duration, rsvp.Error))
   Register(String)
-  LoggedInResponse(Result(player.LogInResponse, rsvp.Error))
+  LoggedInResponse(Result(auth.LogInResponse, rsvp.Error))
 }
 
 pub fn wait(milliseconds: Int, msg: msg) -> Effect(msg) {
@@ -187,7 +187,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
             case
               json.parse(
                 res.body,
-                player.registration_failed_response_decoder(),
+                auth.registration_failed_response_decoder(),
               )
             {
               Ok(rf) -> player_info.NameAlreadyTaken(rf.already_taken)

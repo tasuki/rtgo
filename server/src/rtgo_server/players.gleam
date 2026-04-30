@@ -6,7 +6,7 @@ import gleam/string
 import gleam/time/duration.{type Duration}
 import gleam/time/timestamp.{type Timestamp}
 import rtgo_server/log
-import rtgo_shared/player
+import rtgo_shared/auth
 import ywt
 import ywt/claim
 import ywt/sign_key.{type SignKey}
@@ -20,12 +20,12 @@ pub type Message {
   Register(
     username: String,
     client: Subject(
-      Result(player.LogInResponse, player.RegistrationFailedResponse),
+      Result(auth.LogInResponse, auth.RegistrationFailedResponse),
     ),
   )
   LogIn(
     jwt: String,
-    client: Subject(Result(player.LogInResponse, player.LogInFailedResponse)),
+    client: Subject(Result(auth.LogInResponse, auth.LogInFailedResponse)),
   )
   Prune(self: Subject(Message))
 }
@@ -48,10 +48,10 @@ fn process_login(
   state: State,
   username: String,
   now: Timestamp,
-  client: Subject(Result(player.LogInResponse, _)),
+  client: Subject(Result(auth.LogInResponse, _)),
 ) -> actor.Next(State, Message) {
   let jwt = gen_jwt(state.sign_key, username)
-  process.send(client, Ok(player.LogInResponse(jwt)))
+  process.send(client, Ok(auth.LogInResponse(jwt)))
   let new_users =
     dict.insert(
       state.users,
@@ -81,7 +81,7 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
           log.info("Can't register, already taken: " <> username)
           process.send(
             client,
-            Error(player.RegistrationFailedResponse(username)),
+            Error(auth.RegistrationFailedResponse(username)),
           )
           actor.continue(state)
         }
@@ -94,7 +94,7 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
 
     LogIn(jwt, client) -> {
       let decoded =
-        ywt.decode(jwt, player.jwt_decoder(), [get_expire_claim()], [
+        ywt.decode(jwt, auth.jwt_decoder(), [get_expire_claim()], [
           verify_key.derived(state.sign_key),
         ])
       case decoded {
@@ -102,7 +102,7 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
           log.info("Could not log in: " <> string.inspect(e))
           process.send(
             client,
-            Error(player.LogInFailedResponse(string.inspect(e))),
+            Error(auth.LogInFailedResponse(string.inspect(e))),
           )
           actor.continue(state)
         }
@@ -158,13 +158,13 @@ pub fn start(sign_key: SignKey) -> Subject(Message) {
 pub fn try_register(
   subject: Subject(Message),
   username: String,
-) -> Result(player.LogInResponse, player.RegistrationFailedResponse) {
+) -> Result(auth.LogInResponse, auth.RegistrationFailedResponse) {
   process.call(subject, 100, fn(client) { Register(username, client) })
 }
 
 pub fn try_login(
   subject: Subject(Message),
   jwt: String,
-) -> Result(player.LogInResponse, player.LogInFailedResponse) {
+) -> Result(auth.LogInResponse, auth.LogInFailedResponse) {
   process.call(subject, 100, fn(client) { LogIn(jwt, client) })
 }

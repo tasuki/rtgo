@@ -36,5 +36,8 @@ run = [
 [tasks."test:shared"]
 dir = "shared"
 run = "gleam test"
+[tasks."test:server"]
+dir = "server"
+run = "gleam test"
 [tasks.test]
-depends = ["test:shared"]
+depends = ["test:shared", "test:server"]
