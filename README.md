@@ -11,8 +11,13 @@ One needs [mise](https://mise.jdx.dev/). I used `2025.4.1`.
 mise install
 ```
 
-Create a `mise.local.toml` and define `SECRET_KEY_BASE`.
+Create `mise.local.toml`:
 
+```
+[env]
+SECRET_KEY_BASE = "dev"
+SIGN_KEY = "this.one.should.be.rather.very.long"
+```
 
 ## Develop
 
