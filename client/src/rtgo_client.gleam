@@ -185,10 +185,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         rsvp.HttpError(res) if res.status == 409 -> {
           #(
             case
-              json.parse(
-                res.body,
-                auth.registration_failed_response_decoder(),
-              )
+              json.parse(res.body, auth.registration_failed_response_decoder())
             {
               Ok(rf) -> player_info.NameAlreadyTaken(rf.already_taken)
               Error(e) -> player_info.OtherError("Error: " <> string.inspect(e))

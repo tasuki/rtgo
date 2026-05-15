@@ -19,9 +19,7 @@ type State {
 pub type Message {
   Register(
     username: String,
-    client: Subject(
-      Result(auth.LogInResponse, auth.RegistrationFailedResponse),
-    ),
+    client: Subject(Result(auth.LogInResponse, auth.RegistrationFailedResponse)),
   )
   LogIn(
     jwt: String,
@@ -79,10 +77,7 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       case is_taken {
         True -> {
           log.info("Can't register, already taken: " <> username)
-          process.send(
-            client,
-            Error(auth.RegistrationFailedResponse(username)),
-          )
+          process.send(client, Error(auth.RegistrationFailedResponse(username)))
           actor.continue(state)
         }
         False -> {
