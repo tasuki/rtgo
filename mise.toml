@@ -26,11 +26,9 @@ depends = ["dev:server", "dev:client"]
 run = [
   "cd shared && gleam build",
   "cd server && gleam build",
-  """cd client \
-    && rm -f build/dev/javascript/lustre/priv \
-    && rm -f build/dev/javascript/lustre_dev_tools/priv \
-    && gleam build
-  """,
+  "cd client && gleam build",
+  "ln -sf ../../../packages/lustre/priv client/build/dev/javascript/lustre/",
+  "ln -sf ../../../packages/lustre_dev_tools/priv client/build/dev/javascript/lustre_dev_tools/",
 ]
 
 [tasks."test:shared"]
