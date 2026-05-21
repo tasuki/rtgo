@@ -1,4 +1,5 @@
 import gleam/dict.{type Dict}
+import rtgo_server/log
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
@@ -19,7 +20,7 @@ pub type Entry {
 }
 
 pub type Lobby {
-  Lobby(players: Dict(String, player.Player))
+  Lobby(host: String, players: Dict(String, player.Player))
 }
 
 pub type Metadata {
@@ -28,14 +29,15 @@ pub type Metadata {
 
 pub type Error {
   GameNotFound
+  NotHost
 }
 
 pub type Message {
-  CreateGame(reply: Subject(String))
+  CreateGame(host: String, reply: Subject(String))
   ListGames(reply: Subject(Dict(String, Metadata)))
   GetGame(id: String, reply: Subject(Result(Entry, Error)))
   JoinGame(id: String, name: String, reply: Subject(Result(Bool, Error)))
-  StartGame(id: String, reply: Subject(Result(Bool, Error)))
+  StartGame(id: String, name: String, reply: Subject(Result(Bool, Error)))
   DeleteGame(id: String)
 }
 
@@ -69,7 +71,7 @@ fn next_color(players: Dict(String, player.Player)) -> Result(player.Color, Nil)
 
 fn metadata(entry: Entry) -> Metadata {
   case entry {
-    Open(Lobby(players)) -> {
+    Open(Lobby(players:, ..)) -> {
       Metadata(phase: shared_game.Negotiating, player_count: dict.size(players))
     }
     Running(subject) -> {
@@ -85,12 +87,31 @@ fn list_metadata(games: Dict(String, Entry)) -> Dict(String, Metadata) {
   })
 }
 
+fn add_player(
+  players: Dict(String, player.Player),
+  name: String,
+) -> Result(Dict(String, player.Player), Nil) {
+  case dict.has_key(players, name) {
+    True -> Error(Nil)
+    False -> {
+      case next_color(players) {
+        Ok(color) -> Ok(dict.insert(players, name, player.Player(name, color)))
+        Error(_) -> Error(Nil)
+      }
+    }
+  }
+}
+
 fn handle_create_game(
   state: State,
+  host: String,
   reply: Subject(String),
 ) -> actor.Next(State, Message) {
   let new_id = generate_new_id(state)
-  let new_games = dict.insert(state.games, new_id, Open(Lobby(dict.new())))
+  let assert Ok(players) = add_player(dict.new(), host)
+  let new_games =
+    dict.insert(state.games, new_id, Open(Lobby(host: host, players: players)))
+  log.info("Created new game: " <> new_id)
   process.send(reply, new_id)
   actor.continue(State(new_games))
 }
@@ -102,19 +123,22 @@ fn handle_join_game(
   reply: Subject(Result(Bool, Error)),
 ) -> actor.Next(State, Message) {
   case dict.get(state.games, id) {
-    Ok(Open(Lobby(players))) -> {
+    Ok(Open(Lobby(host:, players: players))) -> {
       case dict.has_key(players, name) {
         True -> {
-          process.send(reply, Ok(False))
+          process.send(reply, Ok(True))
           actor.continue(state)
         }
         False -> {
-          case next_color(players) {
-            Ok(color) -> {
-              let new_player = player.Player(name, color)
-              let new_players = dict.insert(players, name, new_player)
+          case add_player(players, name) {
+            Ok(new_players) -> {
               let new_games =
-                dict.insert(state.games, id, Open(Lobby(new_players)))
+                dict.insert(
+                  state.games,
+                  id,
+                  Open(Lobby(host: host, players: new_players)),
+                )
+              log.info("Player " <> name <> " joined game " <> id)
               process.send(reply, Ok(True))
               actor.continue(State(new_games))
             }
@@ -140,20 +164,30 @@ fn handle_join_game(
 fn handle_start_game(
   state: State,
   id: String,
+  name: String,
   reply: Subject(Result(Bool, Error)),
 ) -> actor.Next(State, Message) {
   case dict.get(state.games, id) {
-    Ok(Open(Lobby(players))) -> {
-      case dict.size(players) >= 2 {
+    Ok(Open(Lobby(host:, players: players))) -> {
+      case name != host {
         True -> {
-          let subject = game.start(players)
-          let new_games = dict.insert(state.games, id, Running(subject))
-          process.send(reply, Ok(True))
-          actor.continue(State(new_games))
+          process.send(reply, Error(NotHost))
+          actor.continue(state)
         }
         False -> {
-          process.send(reply, Ok(False))
-          actor.continue(state)
+          case dict.size(players) >= 2 {
+            True -> {
+              let subject = game.start(players)
+              let new_games = dict.insert(state.games, id, Running(subject))
+              log.info("Started game: " <> id)
+              process.send(reply, Ok(True))
+              actor.continue(State(new_games))
+            }
+            False -> {
+              process.send(reply, Ok(False))
+              actor.continue(state)
+            }
+          }
         }
       }
     }
@@ -170,7 +204,7 @@ fn handle_start_game(
 
 fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
   case msg {
-    CreateGame(reply) -> handle_create_game(state, reply)
+    CreateGame(host, reply) -> handle_create_game(state, host, reply)
     GetGame(id, reply) -> {
       process.send(
         reply,
@@ -183,7 +217,7 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       actor.continue(state)
     }
     JoinGame(id, name, reply) -> handle_join_game(state, id, name, reply)
-    StartGame(id, reply) -> handle_start_game(state, id, reply)
+    StartGame(id, name, reply) -> handle_start_game(state, id, name, reply)
     DeleteGame(id) -> {
       let new_games = dict.delete(state.games, id)
       actor.continue(State(new_games))
@@ -199,8 +233,8 @@ pub fn start() -> Subject(Message) {
   actor.data
 }
 
-pub fn create_game(subject: Subject(Message)) -> String {
-  process.call(subject, 100, fn(client) { CreateGame(client) })
+pub fn create_game(subject: Subject(Message), host: String) -> String {
+  process.call(subject, 100, fn(client) { CreateGame(host, client) })
 }
 
 pub fn get_game(subject: Subject(Message), id: String) -> Result(Entry, Error) {
@@ -219,8 +253,12 @@ pub fn join_game(
   process.call(subject, 100, fn(client) { JoinGame(id, name, client) })
 }
 
-pub fn start_game(subject: Subject(Message), id: String) -> Result(Bool, Error) {
-  process.call(subject, 100, fn(client) { StartGame(id, client) })
+pub fn start_game(
+  subject: Subject(Message),
+  id: String,
+  name: String,
+) -> Result(Bool, Error) {
+  process.call(subject, 100, fn(client) { StartGame(id, name, client) })
 }
 
 pub fn delete_game(subject: Subject(Message), id: String) {

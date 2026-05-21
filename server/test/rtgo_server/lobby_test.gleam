@@ -9,40 +9,43 @@ import rtgo_shared/player
 pub fn create_game_is_listed_test() {
   let actor = lobby.start()
 
-  let id = lobby.create_game(actor)
+  let id = lobby.create_game(actor, "host")
   let games = lobby.list_games(actor)
 
   should.not_equal(id, "")
   should.equal(
     dict.get(games, id),
-    Ok(lobby.Metadata(shared_game.Negotiating, 0)),
+    Ok(lobby.Metadata(shared_game.Negotiating, 1)),
   )
 }
 
 pub fn join_assigns_distinct_colors_test() {
   let actor = lobby.start()
-  let id = lobby.create_game(actor)
+  let id = lobby.create_game(actor, "host")
 
   should.equal(lobby.join_game(actor, id, "alice"), Ok(True))
   should.equal(lobby.join_game(actor, id, "bob"), Ok(True))
 
-  let assert Ok(lobby.Open(lobby.Lobby(players))) = lobby.get_game(actor, id)
+  let assert Ok(lobby.Open(lobby.Lobby(players:, ..))) =
+    lobby.get_game(actor, id)
+  let assert Ok(player.Player(_, host_color)) = dict.get(players, "host")
   let assert Ok(player.Player(_, alice_color)) = dict.get(players, "alice")
   let assert Ok(player.Player(_, bob_color)) = dict.get(players, "bob")
+  should.not_equal(host_color, alice_color)
   should.not_equal(alice_color, bob_color)
+  should.equal(list.contains(player.all_colors, host_color), True)
   should.equal(list.contains(player.all_colors, alice_color), True)
   should.equal(list.contains(player.all_colors, bob_color), True)
 }
 
 pub fn start_requires_two_players_test() {
   let actor = lobby.start()
-  let id = lobby.create_game(actor)
+  let id = lobby.create_game(actor, "host")
 
-  should.equal(lobby.start_game(actor, id), Ok(False))
+  should.equal(lobby.start_game(actor, id, "host"), Ok(False))
   should.equal(lobby.join_game(actor, id, "alice"), Ok(True))
-  should.equal(lobby.start_game(actor, id), Ok(False))
-  should.equal(lobby.join_game(actor, id, "bob"), Ok(True))
-  should.equal(lobby.start_game(actor, id), Ok(True))
+  should.equal(lobby.start_game(actor, id, "alice"), Error(lobby.NotHost))
+  should.equal(lobby.start_game(actor, id, "host"), Ok(True))
 
   let assert Ok(lobby.Running(subject)) = lobby.get_game(actor, id)
   let game.Snapshot(players:, ..) = game.get_game(subject)
@@ -55,7 +58,7 @@ pub fn start_requires_two_players_test() {
 
 pub fn cannot_join_when_colors_are_exhausted_test() {
   let actor = lobby.start()
-  let id = lobby.create_game(actor)
+  let id = lobby.create_game(actor, "host")
 
   should.equal(lobby.join_game(actor, id, "p1"), Ok(True))
   should.equal(lobby.join_game(actor, id, "p2"), Ok(True))
@@ -64,6 +67,5 @@ pub fn cannot_join_when_colors_are_exhausted_test() {
   should.equal(lobby.join_game(actor, id, "p5"), Ok(True))
   should.equal(lobby.join_game(actor, id, "p6"), Ok(True))
   should.equal(lobby.join_game(actor, id, "p7"), Ok(True))
-  should.equal(lobby.join_game(actor, id, "p8"), Ok(True))
-  should.equal(lobby.join_game(actor, id, "p9"), Ok(False))
+  should.equal(lobby.join_game(actor, id, "p8"), Ok(False))
 }

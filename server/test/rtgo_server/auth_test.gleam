@@ -7,6 +7,7 @@ import gleam/http/response
 import gleam/json
 import gleam/list
 import gleeunit/should
+import rtgo_server/lobby
 import rtgo_server/players
 import rtgo_server/router
 import rtgo_shared/auth
@@ -18,8 +19,10 @@ import ywt/sign_key
 
 pub fn registration_and_login_test() {
   let actor = players.start(test_sign_key())
+  let lobby_actor = lobby.start()
 
-  let register_response = router.handle(actor, register_request("alice"))
+  let register_response =
+    router.handle(actor, lobby_actor, register_request("alice"))
   should.equal(register_response.status, 200)
 
   let first_login =
@@ -27,7 +30,8 @@ pub fn registration_and_login_test() {
     |> read_json(auth.log_in_response_decoder)
   should.equal(validate_jwt_username(first_login.jwt), Ok("alice"))
 
-  let login_response = router.handle(actor, login_request(first_login.jwt))
+  let login_response =
+    router.handle(actor, lobby_actor, login_request(first_login.jwt))
   should.equal(login_response.status, 200)
 
   let second_login =
@@ -38,9 +42,10 @@ pub fn registration_and_login_test() {
 
 pub fn duplicate_registration_returns_conflict_test() {
   let actor = players.start(test_sign_key())
+  let lobby_actor = lobby.start()
 
-  let _ = router.handle(actor, register_request("alice"))
-  let response = router.handle(actor, register_request("alice"))
+  let _ = router.handle(actor, lobby_actor, register_request("alice"))
+  let response = router.handle(actor, lobby_actor, register_request("alice"))
 
   should.equal(response.status, 409)
   should.equal(
@@ -51,11 +56,12 @@ pub fn duplicate_registration_returns_conflict_test() {
 
 pub fn client_registration_flow_test() {
   let actor = players.start(test_sign_key())
+  let lobby_actor = lobby.start()
   let server_url = "https://rtgo.test"
 
   let register_response =
     auth_api.register_request(server_url, "alice")
-    |> run_client_request(actor)
+    |> run_client_request(actor, lobby_actor)
   should.equal(register_response.status, 200)
 
   let first_login =
@@ -65,7 +71,7 @@ pub fn client_registration_flow_test() {
 
   let log_in_response =
     auth_api.log_in_request(server_url, first_login.jwt)
-    |> run_client_request(actor)
+    |> run_client_request(actor, lobby_actor)
   should.equal(log_in_response.status, 200)
 
   let second_login =
@@ -76,8 +82,9 @@ pub fn client_registration_flow_test() {
 
 pub fn invalid_login_returns_bad_request_test() {
   let actor = players.start(test_sign_key())
+  let lobby_actor = lobby.start()
 
-  let response = router.handle(actor, login_request("not-a-jwt"))
+  let response = router.handle(actor, lobby_actor, login_request("not-a-jwt"))
 
   should.equal(response.status, 400)
   let failure = read_json(response, auth.log_in_failed_response_decoder)
@@ -107,6 +114,7 @@ fn login_request(jwt: String) {
 fn run_client_request(
   client_request: request.Request(String),
   actor: process.Subject(players.Message),
+  lobby_actor: process.Subject(lobby.Message),
 ) -> response.Response(String) {
   let request.Request(method:, headers:, body:, path:, ..) = client_request
 
@@ -120,7 +128,7 @@ fn run_client_request(
       request.set_header(req, header.0, header.1)
     })
 
-  let server_response = router.handle(actor, server_request)
+  let server_response = router.handle(actor, lobby_actor, server_request)
   response.Response(
     status: server_response.status,
     headers: server_response.headers,

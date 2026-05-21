@@ -5,6 +5,7 @@ import gleam/int
 import gleam/result
 import logging
 import mist
+import rtgo_server/lobby
 import rtgo_server/players
 import rtgo_server/router
 import wisp/wisp_mist
@@ -25,9 +26,10 @@ pub fn main() -> Nil {
 
   let assert Ok(sign_key) = sign_key.hs256(sign_key_secret)
   let players_actor = players.start(sign_key)
+  let lobby_actor = lobby.start()
 
   let assert Ok(_) =
-    wisp_mist.handler(router.handle(players_actor, _), secret_key)
+    wisp_mist.handler(router.handle(players_actor, lobby_actor, _), secret_key)
     |> mist.new
     |> mist.port(port)
     |> mist.start()
