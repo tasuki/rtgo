@@ -25,6 +25,7 @@ pub type Message {
     jwt: String,
     client: Subject(Result(auth.LogInResponse, auth.LogInFailedResponse)),
   )
+  Authenticate(jwt: String, client: Subject(Result(String, Nil)))
   Prune(self: Subject(Message))
 }
 
@@ -40,6 +41,12 @@ fn get_expire_claim() -> claim.Claim {
 fn gen_jwt(key: SignKey, sub: String) -> String {
   let claims = [claim.subject(sub, []), get_expire_claim()]
   ywt.encode([], claims, key)
+}
+
+fn decode_jwt(key: SignKey, jwt: String) {
+  ywt.decode(jwt, auth.jwt_decoder(), [get_expire_claim()], [
+    verify_key.derived(key),
+  ])
 }
 
 fn process_login(
@@ -88,10 +95,7 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
     }
 
     LogIn(jwt, client) -> {
-      let decoded =
-        ywt.decode(jwt, auth.jwt_decoder(), [get_expire_claim()], [
-          verify_key.derived(state.sign_key),
-        ])
+      let decoded = decode_jwt(state.sign_key, jwt)
       case decoded {
         Error(e) -> {
           log.info("Could not log in: " <> string.inspect(e))
@@ -111,6 +115,15 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
           process_login(state, username, now, client)
         }
       }
+    }
+
+    Authenticate(jwt, client) -> {
+      let username = case decode_jwt(state.sign_key, jwt) {
+        Ok(#(username, _)) -> Ok(username)
+        Error(_) -> Error(Nil)
+      }
+      process.send(client, username)
+      actor.continue(state)
     }
 
     Prune(self) -> {
@@ -155,6 +168,14 @@ pub fn try_register(
   username: String,
 ) -> Result(auth.LogInResponse, auth.RegistrationFailedResponse) {
   process.call(subject, 100, fn(client) { Register(username, client) })
+}
+
+/// Verify a token without renewing it or changing the registration state.
+pub fn authenticate(
+  subject: Subject(Message),
+  jwt: String,
+) -> Result(String, Nil) {
+  process.call(subject, 100, fn(client) { Authenticate(jwt, client) })
 }
 
 pub fn try_login(

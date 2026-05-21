@@ -1,6 +1,7 @@
 import gleam/dict
 import gleeunit/should
 import rtgo_server/game
+import rtgo_shared/game as shared_game
 import rtgo_shared/go
 import rtgo_shared/player
 
@@ -12,7 +13,7 @@ fn players() {
 }
 
 pub fn started_game_accepts_moves_test() {
-  let actor = game.start(players())
+  let actor = game.start(players(), shared_game.default_settings)
 
   should.equal(game.play(actor, "alice", #(3, 3)), Ok(Nil))
 
@@ -25,7 +26,7 @@ pub fn started_game_accepts_moves_test() {
 }
 
 pub fn unknown_player_cannot_move_test() {
-  let actor = game.start(players())
+  let actor = game.start(players(), shared_game.default_settings)
 
   should.equal(game.play(actor, "charlie", #(3, 3)), Error(game.UnknownPlayer))
 }

@@ -17,14 +17,14 @@ pub type PlayerStatus {
   VerifyingName(String)
   NameAlreadyTaken(String)
   OtherError(String)
-  LoggedIn(String)
+  LoggedIn(name: String, jwt: String)
 }
 
 pub fn desired_name(ps: PlayerStatus) -> Result(String, Nil) {
   case ps {
     NameAlreadyTaken(n) -> Ok(n)
     VerifyingName(n) -> Ok(n)
-    LoggedIn(n) -> Ok(n)
+    LoggedIn(n, _) -> Ok(n)
     _ -> Error(Nil)
   }
 }
@@ -34,8 +34,11 @@ fn storage() {
   local_storage
 }
 
-pub fn storage_set_login(jwt: String) {
-  storage.set_item(storage(), "login", jwt)
+pub fn save_login(jwt: String) -> Effect(msg) {
+  effect.from(fn(_) {
+    let _ = storage.set_item(storage(), "login", jwt)
+    Nil
+  })
 }
 
 fn storage_get_login() {
@@ -83,9 +86,14 @@ pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
 
   let registration_form =
     html.form([event.on_submit(msg_handler)], [
-      html.div([], [html.text("Choose your name...")]),
-      html.input([attribute.name("username")]),
-      html.button([attribute.type_("submit")], [html.text("Submit Post")]),
+      html.label([attribute.for("username")], [html.text("Choose your name...")]),
+      html.input([
+        attribute.id("username"),
+        attribute.name("username"),
+        attribute.required(True),
+        attribute.autocomplete("username"),
+      ]),
+      html.button([attribute.type_("submit")], [html.text("Continue")]),
     ])
 
   let inside = case player_status {
@@ -114,7 +122,7 @@ pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
         html.br([]),
         registration_form,
       ])
-    LoggedIn(name) -> html.div([], [html.text("Logged in as " <> name)])
+    LoggedIn(name, _) -> html.div([], [html.text("Logged in as " <> name)])
   }
 
   html.div([attribute.id("page-container")], [inside])

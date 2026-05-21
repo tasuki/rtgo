@@ -1,15 +1,24 @@
 import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/otp/actor
+import rtgo_shared/game as shared_game
 import rtgo_shared/go
 import rtgo_shared/player
 
 type State {
-  State(players: Dict(String, player.Player), board: go.Game)
+  State(
+    players: Dict(String, player.Player),
+    board: go.Game,
+    settings: shared_game.Settings,
+  )
 }
 
 pub type Snapshot {
-  Snapshot(players: Dict(String, player.Player), board: go.Game)
+  Snapshot(
+    players: Dict(String, player.Player),
+    board: go.Game,
+    settings: shared_game.Settings,
+  )
 }
 
 pub type Error {
@@ -23,7 +32,7 @@ pub type Message {
 }
 
 fn snapshot(state: State) -> Snapshot {
-  Snapshot(state.players, state.board)
+  Snapshot(state.players, state.board, state.settings)
 }
 
 fn handle_play(
@@ -62,9 +71,16 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
   }
 }
 
-pub fn start(players: Dict(String, player.Player)) -> Subject(Message) {
+pub fn start(
+  players: Dict(String, player.Player),
+  settings: shared_game.Settings,
+) -> Subject(Message) {
   let assert Ok(actor) =
-    actor.new(State(players: players, board: go.new_game(19)))
+    actor.new(State(
+      players: players,
+      board: go.new_game(settings.board_size),
+      settings: settings,
+    ))
     |> actor.on_message(handle_message)
     |> actor.start
   actor.data

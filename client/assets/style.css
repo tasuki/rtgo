@@ -36,6 +36,16 @@ html, body { font-family: "Recursive Mono"; margin: 0; height: 100%; }
   #menu .icon:hover .tooltip { display: block; position: absolute; top: 25px; color: #222; }
 }
 
+button, input, select {
+  font: inherit; border: 2px solid #222; border-radius: 12px; background: #FFF;
+  padding: 10px 14px;
+  transition: transform 120ms ease, box-shadow 120ms ease, background-color 120ms ease;
+}
+button { cursor: pointer; }
+button:hover { background: #EEE; }
+input { max-width: 100%; box-sizing: border-box; }
+button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
+
 #board-container { display: flex; align-items: center; justify-content: center; height: 100%; overflow: hidden; }
 #board { width: 100vmin; height: 100vmin; background-color: #CB5; position: relative; }
 #lines { stroke: #0009; stroke-width: 1.5; }
@@ -53,4 +63,27 @@ html, body { font-family: "Recursive Mono"; margin: 0; height: 100%; }
 #page-container { margin: 60px auto 0 auto; padding: 0 10px 10px 10px; max-width: 600px; }
 @media screen and (min-aspect-ratio: 1/1) {
   #page-container { margin: 0 auto 0 auto; }
+}
+
+#page-container.lobby-page { max-width: 720px; margin-top: 0; padding: 72px 16px 32px; }
+.error { color: #A20; }
+.back-to-lobby { position: absolute; right: 12px; top: 12px; z-index: 1; }
+.lobby-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.lobby-header h1 { margin: 0; }
+.lobby-section { margin-top: 24px; }
+.lobby-section h2 { margin: 0 0 10px 0; }
+.games-list { display: grid; gap: 10px; }
+.game-row {
+  display: grid; grid-template-columns: 1fr auto auto; gap: 12px; width: 100%;
+  text-align: left;
+}
+.game-id { font-weight: 700; }
+.game-phase, .game-count { color: #555; }
+.game-settings { display: block; margin-top: 4px; font-weight: normal; color: #555; }
+.create-game { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; margin: 24px 0; }
+.create-game h2, .create-game button { grid-column: 1 / -1; }
+.create-game select, .create-game input { min-width: 0; width: 100%; box-sizing: border-box; }
+.danger { color: #A20; margin-top: 16px; }
+@media screen and (max-width: 600px) {
+  .game-row, .create-game { grid-template-columns: 1fr; }
 }
