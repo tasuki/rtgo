@@ -1,9 +1,14 @@
+import gleam/dict
 import gleam/http/response
+import gleam/json
 import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit
 import gleeunit/should
+import lustre/dev/query
+import lustre/dev/simulate
+import lustre/effect
 import lustre/element
 import rsvp
 import rtgo_client as app
@@ -42,6 +47,7 @@ fn room(
     players,
     list.length(players),
     game.default_settings,
+    game.default_cooldowns(players, game.default_settings),
   ))
 }
 
@@ -166,6 +172,8 @@ pub fn navigation_discards_old_responses_actions_and_timers_even_on_revisit_test
     app.GameStarted(old, "other", Ok(lobby_api.StartGameResponse(True))),
     app.GameLeft(old, Ok(Nil)),
     app.GameCancelled(old, Ok(Nil)),
+    app.PlayerKicked(old, "bob", Ok(Nil)),
+    app.PlayerCooldownSet(old, "bob", 10, Ok(Nil)),
   ]
   list.each(stale_messages, fn(msg) {
     should.equal(step(revisited, msg), revisited)
@@ -257,6 +265,7 @@ pub fn creation_settings_are_validated_and_selected_board_is_used_test() {
       ["alice", "bob"],
       2,
       settings,
+      game.default_cooldowns(["alice", "bob"], settings),
     )
   let loaded =
     step(
@@ -267,6 +276,206 @@ pub fn creation_settings_are_validated_and_selected_board_is_used_test() {
       ),
     )
   should.equal(loaded.game.board_size, 13)
+}
+
+pub fn host_controls_keep_cooldown_drafts_stable_during_refresh_test() {
+  let initial = model(app.Play("room"))
+  let response = room("room", game.Negotiating, ["alice", "bob"])
+  let loaded = step(initial, app.GameLoaded(initial.page_version, Ok(response)))
+  let editing = step(loaded, app.PlayerCooldownChanged("bob", "15"))
+  let html = editing |> app.view |> element.to_string
+  should.equal(string.contains(html, "Set cooldown"), False)
+  should.equal(string.contains(html, "Kick"), True)
+  let assert Ok(host_row) =
+    query.find(
+      app.view(editing),
+      query.element(query.attribute("data-player", "alice")),
+    )
+  let assert Ok(guest_row) =
+    query.find(
+      app.view(editing),
+      query.element(query.attribute("data-player", "bob")),
+    )
+  should.equal(
+    host_row |> element.to_string |> string.contains("disabled"),
+    True,
+  )
+  should.equal(
+    guest_row |> element.to_string |> string.contains("disabled"),
+    False,
+  )
+  let refreshed =
+    editing
+    |> step(app.Refresh(editing.page_version))
+    |> step(app.GameLoaded(editing.page_version, Ok(response)))
+  should.equal(refreshed.cooldown_drafts, editing.cooldown_drafts)
+  should.equal(refreshed |> app.view |> element.to_string, html)
+  let guest =
+    app.Model(..editing, player: player_info.LoggedIn("bob", "guest-jwt"))
+  let guest_html = guest |> app.view |> element.to_string
+  should.equal(string.contains(guest_html, "Set cooldown"), False)
+  should.equal(string.contains(guest_html, "Kick"), False)
+  list.each(
+    [
+      app.KickPlayerPressed("room", "alice"),
+      app.SetPlayerCooldownPressed("room", "bob"),
+    ],
+    fn(msg) { should.equal(step(guest, msg), guest) },
+  )
+  should.equal(step(editing, app.KickPlayerPressed("room", "alice")), editing)
+  list.each(["4", "0", "3601", "bad"], fn(value) {
+    let rejected =
+      editing
+      |> step(app.PlayerCooldownChanged("bob", value))
+      |> step(app.SetPlayerCooldownPressed("room", "bob"))
+    should.equal(rejected.pending_action, False)
+    should.not_equal(rejected.action_error, None)
+  })
+}
+
+pub fn successful_host_changes_update_the_room_and_invalidate_old_polls_test() {
+  let initial = model(app.Play("room"))
+  let response = room("room", game.Negotiating, ["alice", "bob"])
+  let loaded = step(initial, app.GameLoaded(initial.page_version, Ok(response)))
+  let pending =
+    loaded
+    |> step(app.PlayerCooldownChanged("bob", "15"))
+    |> step(app.SetPlayerCooldownPressed("room", "bob"))
+  should.equal(pending.pending_action, True)
+  should.equal(
+    step(pending, app.SetPlayerCooldownPressed("room", "bob")),
+    pending,
+  )
+  let failed =
+    step(
+      pending,
+      app.PlayerCooldownSet(
+        pending.page_version,
+        "bob",
+        15,
+        Error(rsvp.NetworkError),
+      ),
+    )
+  should.equal(failed.pending_action, False)
+  should.equal(dict.get(failed.cooldown_drafts, "bob"), Ok("15"))
+  let changed =
+    step(
+      pending,
+      app.PlayerCooldownSet(pending.page_version, "bob", 15, Ok(Nil)),
+    )
+  should.equal(changed.pending_action, False)
+  should.equal(dict.has_key(changed.cooldown_drafts, "bob"), False)
+  let assert Some(details) = changed.current_game
+  should.equal(dict.get(details.cooldowns, "bob"), Ok(15))
+  should.equal(
+    step(changed, app.GameLoaded(loaded.page_version, Ok(response))),
+    changed,
+  )
+  let refreshed =
+    step(
+      changed,
+      app.GameLoaded(
+        changed.page_version,
+        Ok(lobby_api.GetGameResponse(details)),
+      ),
+    )
+  let kicking = step(refreshed, app.KickPlayerPressed("room", "bob"))
+  should.equal(kicking.pending_action, True)
+  should.equal(step(kicking, app.KickPlayerPressed("room", "bob")), kicking)
+  let kicked =
+    step(kicking, app.PlayerKicked(kicking.page_version, "bob", Ok(Nil)))
+  let assert Some(remaining) = kicked.current_game
+  should.equal(remaining.players, ["alice"])
+  should.equal(remaining.player_count, 1)
+  should.equal(dict.has_key(remaining.cooldowns, "bob"), False)
+  should.equal(
+    step(
+      kicked,
+      app.GameLoaded(
+        kicking.page_version,
+        Ok(lobby_api.GetGameResponse(details)),
+      ),
+    ),
+    kicked,
+  )
+}
+
+pub fn cooldown_autosave_waits_before_a_followup_action_and_skips_unchanged_values_test() {
+  let initial = model(app.Play("room"))
+  let response = room("room", game.Negotiating, ["alice", "bob"])
+  let loaded = step(initial, app.GameLoaded(initial.page_version, Ok(response)))
+  should.equal(
+    step(loaded, app.SetPlayerCooldownPressed("room", "bob")),
+    loaded,
+  )
+  let editing = step(loaded, app.PlayerCooldownChanged("bob", "15"))
+  let simulation =
+    simulate.application(
+      fn(_) { #(editing, effect.none()) },
+      app.update,
+      app.view,
+    )
+    |> simulate.start(Nil)
+  let input =
+    query.element(query.attribute("aria-label", "Cooldown seconds for bob"))
+  let blurred =
+    simulation |> simulate.event(input, "blur", []) |> simulate.model
+  should.equal(blurred.saving_cooldown, True)
+  let entered =
+    simulation
+    |> simulate.event(input, "keydown", [#("key", json.string("Enter"))])
+    |> simulate.model
+  should.equal(entered.saving_cooldown, True)
+  should.equal(
+    simulation
+      |> simulate.event(input, "keydown", [#("key", json.string("ArrowLeft"))])
+      |> simulate.model,
+    editing,
+  )
+  let pending =
+    loaded
+    |> step(app.PlayerCooldownChanged("bob", "15"))
+    |> step(app.SetPlayerCooldownPressed("room", "bob"))
+  list.each(
+    [
+      app.StartGamePressed("room"),
+      app.KickPlayerPressed("room", "bob"),
+      app.CancelGamePressed("room"),
+    ],
+    fn(action) {
+      let queued = step(pending, action)
+      should.equal(queued.after_save, Some(action))
+      should.equal(step(queued, action), queued)
+      let saved =
+        step(
+          queued,
+          app.PlayerCooldownSet(queued.page_version, "bob", 15, Ok(Nil)),
+        )
+      should.equal(saved.after_save, None)
+      should.equal(saved.saving_cooldown, False)
+      should.equal(saved.pending_action, True)
+      let failed =
+        step(
+          queued,
+          app.PlayerCooldownSet(
+            queued.page_version,
+            "bob",
+            15,
+            Error(rsvp.NetworkError),
+          ),
+        )
+      should.equal(failed.after_save, None)
+      should.equal(failed.pending_action, False)
+      should.equal(dict.get(failed.cooldown_drafts, "bob"), Ok("15"))
+    },
+  )
+  let invalid =
+    loaded
+    |> step(app.PlayerCooldownChanged("bob", "bad"))
+    |> step(app.SetPlayerCooldownPressed("room", "bob"))
+    |> step(app.StartGamePressed("room"))
+  should.equal(invalid.pending_action, False)
+  should.not_equal(invalid.action_error, None)
 }
 
 pub fn leave_and_cancel_prevent_duplicate_actions_and_allow_retry_test() {

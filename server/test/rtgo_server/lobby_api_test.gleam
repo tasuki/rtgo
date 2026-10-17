@@ -1,4 +1,5 @@
 import gleam/bit_array
+import gleam/dict
 import gleam/http.{Options, Post}
 import gleam/http/request
 import gleam/http/response
@@ -101,6 +102,7 @@ pub fn lobby_lifecycle_through_client_api_test() {
       ["alice", "zoe"],
       2,
       settings,
+      game.default_cooldowns(["alice", "zoe"], settings),
     ),
   )
   should.equal(
@@ -159,7 +161,15 @@ pub fn guests_can_leave_and_rejoin_but_only_host_can_cancel_test() {
   })
   should.equal(
     details(send, id),
-    lobby_api.GameDetails(id, game.Negotiating, "host", ["host"], 1, settings),
+    lobby_api.GameDetails(
+      id,
+      game.Negotiating,
+      "host",
+      ["host"],
+      1,
+      settings,
+      game.default_cooldowns(["host"], settings),
+    ),
   )
   should.equal(
     lobby_api.start_game_request(url, id, host)
@@ -186,6 +196,95 @@ pub fn guests_can_leave_and_rejoin_but_only_host_can_cancel_test() {
       |> read_json(lobby_api.list_games_response_decoder),
     lobby_api.ListGamesResponse([]),
   )
+}
+
+pub fn host_can_kick_and_handicap_waiting_players_test() {
+  let send = server()
+  let host = register(send, "host")
+  let guest = register(send, "guest")
+  let replacement = register(send, "replacement")
+  let id = create(send, host, game.default_settings)
+  should.equal(send(lobby_api.join_game_request(url, id, guest)).status, 200)
+  list.each(
+    [
+      lobby_api.kick_player_request(url, id, guest, "host"),
+      lobby_api.player_cooldown_request(url, id, guest, "guest", 15),
+    ],
+    fn(req) { should.equal(send(req).status, 403) },
+  )
+  should.equal(
+    send(lobby_api.kick_player_request(url, id, host, "host")).status,
+    409,
+  )
+  should.equal(
+    send(lobby_api.kick_player_request(url, id, host, "missing")).status,
+    404,
+  )
+  should.equal(
+    send(lobby_api.player_cooldown_request(url, id, host, "missing", 10)).status,
+    404,
+  )
+  list.each([0, -1, 4, 3601], fn(seconds) {
+    should.equal(
+      send(lobby_api.player_cooldown_request(url, id, host, "guest", seconds)).status,
+      400,
+    )
+  })
+  let malformed =
+    lobby_api.player_cooldown_request(url, id, host, "guest", 10)
+    |> request.set_body(
+      "{\"player\":\"guest\",\"cooldown_seconds\":\"not a number\"}",
+    )
+    |> send
+  should.equal(malformed.status, 400)
+  should.equal(
+    send(lobby_api.player_cooldown_request(url, id, host, "guest", 15)).status,
+    204,
+  )
+  should.equal(
+    send(lobby_api.player_cooldown_request(url, id, host, "host", 8)).status,
+    204,
+  )
+  let adjusted = details(send, id)
+  should.equal(
+    adjusted.cooldowns,
+    dict.from_list([#("host", 8), #("guest", 15)]),
+  )
+  // A retry of join, or leaving and rejoining, cannot discard a handicap.
+  should.equal(send(lobby_api.join_game_request(url, id, guest)).status, 200)
+  should.equal(details(send, id).cooldowns, adjusted.cooldowns)
+  should.equal(send(lobby_api.leave_game_request(url, id, guest)).status, 204)
+  should.equal(details(send, id).cooldowns, dict.from_list([#("host", 8)]))
+  should.equal(send(lobby_api.join_game_request(url, id, guest)).status, 200)
+  should.equal(details(send, id).cooldowns, adjusted.cooldowns)
+  should.equal(
+    send(lobby_api.kick_player_request(url, id, host, "guest")).status,
+    204,
+  )
+  should.equal(details(send, id).players, ["host"])
+  should.equal(details(send, id).cooldowns, dict.from_list([#("host", 8)]))
+  should.equal(send(lobby_api.join_game_request(url, id, guest)).status, 403)
+  should.equal(
+    lobby_api.join_game_request(url, id, replacement)
+      |> send
+      |> read_json(lobby_api.join_game_response_decoder),
+    lobby_api.JoinGameResponse(True),
+  )
+  should.equal(send(lobby_api.start_game_request(url, id, host)).status, 200)
+  let started = details(send, id)
+  should.equal(started.phase, game.Started)
+  should.equal(
+    started.cooldowns,
+    dict.from_list([#("host", 8), #("replacement", 5)]),
+  )
+  list.each(
+    [
+      lobby_api.kick_player_request(url, id, host, "replacement"),
+      lobby_api.player_cooldown_request(url, id, host, "replacement", 20),
+    ],
+    fn(req) { should.equal(send(req).status, 409) },
+  )
+  should.equal(details(send, id), started)
 }
 
 pub fn invalid_settings_are_rejected_without_creating_rooms_test() {
@@ -249,6 +348,8 @@ pub fn mutations_require_a_valid_signed_unexpired_token_test() {
           lobby_api.start_game_request(url, id, host),
           lobby_api.leave_game_request(url, id, host),
           lobby_api.cancel_game_request(url, id, host),
+          lobby_api.kick_player_request(url, id, host, "host"),
+          lobby_api.player_cooldown_request(url, id, host, "host", 10),
         ],
         fn(req) {
           let res =
@@ -274,6 +375,8 @@ pub fn missing_games_and_cors_test() {
       lobby_api.start_game_request(url, "missing", jwt),
       lobby_api.leave_game_request(url, "missing", jwt),
       lobby_api.cancel_game_request(url, "missing", jwt),
+      lobby_api.kick_player_request(url, "missing", jwt, "alice"),
+      lobby_api.player_cooldown_request(url, "missing", jwt, "alice", 10),
     ],
     fn(req) { should.equal(send(req).status, 404) },
   )

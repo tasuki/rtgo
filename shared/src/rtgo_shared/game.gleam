@@ -39,6 +39,26 @@ pub fn colors(settings: Settings) -> List(player.Color) {
   }
 }
 
+pub const max_player_cooldown = 3600
+
+pub fn base_cooldown(settings: Settings) -> Int {
+  let Cooldown(seconds) = settings.time_settings
+  seconds
+}
+
+pub fn default_cooldowns(
+  players: List(String),
+  settings: Settings,
+) -> Dict(String, Int) {
+  dict.from_list(
+    list.map(players, fn(name) { #(name, base_cooldown(settings)) }),
+  )
+}
+
+pub fn valid_player_cooldown(settings: Settings, seconds: Int) -> Bool {
+  seconds >= base_cooldown(settings) && seconds <= max_player_cooldown
+}
+
 pub fn valid_settings(settings: Settings) -> Bool {
   let Cooldown(seconds) = settings.time_settings
   list.contains([9, 13, 19], settings.board_size)

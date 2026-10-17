@@ -1,4 +1,5 @@
 import config
+import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/int
 import gleam/javascript/promise
@@ -15,6 +16,7 @@ import lustre/attribute
 import lustre/effect.{type Effect}
 import lustre/element.{type Element}
 import lustre/element/html
+import lustre/element/keyed
 import lustre/event
 import modem
 import rsvp
@@ -52,11 +54,14 @@ pub type Model {
     // Each visit gets its own generation, including revisits to the same room.
     page_version: Int,
     pending_action: Bool,
+    saving_cooldown: Bool,
+    after_save: Option(Msg),
     load_error: Option(String),
     action_error: Option(String),
     create_board_size: Int,
     create_game_type: shared_game.GameType,
     create_cooldown: String,
+    cooldown_drafts: Dict(String, String),
   )
 }
 
@@ -80,11 +85,14 @@ pub fn initial_model(
     loading_game: False,
     page_version: 0,
     pending_action: False,
+    saving_cooldown: False,
+    after_save: None,
     load_error: None,
     action_error: None,
     create_board_size: shared_game.default_settings.board_size,
     create_game_type: shared_game.default_settings.game_type,
     create_cooldown: int.to_string(default_cooldown),
+    cooldown_drafts: dict.new(),
   )
 }
 
@@ -190,6 +198,11 @@ pub type Msg {
   CancelGamePressed(String)
   GameLeft(Int, Result(Nil, rsvp.Error))
   GameCancelled(Int, Result(Nil, rsvp.Error))
+  KickPlayerPressed(String, String)
+  PlayerKicked(Int, String, Result(Nil, rsvp.Error))
+  PlayerCooldownChanged(String, String)
+  SetPlayerCooldownPressed(String, String)
+  PlayerCooldownSet(Int, String, Int, Result(Nil, rsvp.Error))
   GameCreated(Int, Result(lobby_api.CreateGameResponse, rsvp.Error))
   JoinGamePressed(String)
   GameJoined(Int, String, Result(lobby_api.JoinGameResponse, rsvp.Error))
@@ -222,7 +235,13 @@ fn credentials(model: Model) -> Result(#(String, String), Nil) {
 
 fn action_failed(model: Model, message: String) -> #(Model, Effect(Msg)) {
   #(
-    Model(..model, pending_action: False, action_error: Some(message)),
+    Model(
+      ..model,
+      pending_action: False,
+      saving_cooldown: False,
+      after_save: None,
+      action_error: Some(message),
+    ),
     effect.none(),
   )
 }
@@ -231,7 +250,12 @@ fn action_error(error: rsvp.Error) -> String {
   case error {
     rsvp.HttpError(res) if res.status == 401 ->
       "Your login expired. Reload to log in again."
-    rsvp.HttpError(res) if res.status == 403 || res.status == 409 -> {
+    rsvp.HttpError(res)
+      if res.status == 400
+      || res.status == 403
+      || res.status == 404
+      || res.status == 409
+    -> {
       let decoder = {
         use message <- decode.field("msg", decode.string)
         decode.success(message)
@@ -239,7 +263,6 @@ fn action_error(error: rsvp.Error) -> String {
       json.parse(res.body, decoder)
       |> result.unwrap("This action is no longer available.")
     }
-    rsvp.HttpError(res) if res.status == 404 -> "This game no longer exists."
     _ -> "Could not reach the server. Please try again."
   }
 }
@@ -253,12 +276,24 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     | GameJoined(version, _, _)
     | GameStarted(version, _, _)
     | GameLeft(version, _)
-    | GameCancelled(version, _) -> version != model.page_version
+    | GameCancelled(version, _)
+    | PlayerKicked(version, _, _)
+    | PlayerCooldownSet(version, _, _, _) -> version != model.page_version
     _ -> False
   }
-  case stale {
-    True -> #(model, effect.none())
-    False -> update_current(model, msg)
+  let follows_save = case msg {
+    StartGamePressed(_) | KickPlayerPressed(_, _) | CancelGamePressed(_) ->
+      model.saving_cooldown
+    _ -> False
+  }
+  case stale, follows_save {
+    True, _ -> #(model, effect.none())
+    False, True ->
+      case model.after_save {
+        None -> #(Model(..model, after_save: Some(msg)), effect.none())
+        Some(_) -> #(model, effect.none())
+      }
+    False, False -> update_current(model, msg)
   }
 }
 
@@ -271,9 +306,12 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           route: route,
           page_version: model.page_version + 1,
           current_game: None,
+          cooldown_drafts: dict.new(),
           loading_game: False,
           loading_lobby: False,
           pending_action: False,
+          saving_cooldown: False,
+          after_save: None,
           load_error: None,
           action_error: None,
         )
@@ -385,6 +423,9 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           Model(
             ..model,
             current_game: Some(game),
+            cooldown_drafts: dict.filter(model.cooldown_drafts, fn(name, _) {
+              list.contains(game.players, name)
+            }),
             game: go.new_game(game.settings.board_size),
             loading_game: False,
             load_error: None,
@@ -475,8 +516,17 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       action_failed(model, "This game is full or has already started.")
     GameJoined(_, _, Error(error)) -> action_failed(model, action_error(error))
     StartGamePressed(id) ->
-      case credentials(model), model.pending_action {
-        Ok(#(_, jwt)), False -> #(
+      case
+        credentials(model),
+        model.pending_action,
+        dict.size(model.cooldown_drafts) > 0
+      {
+        Ok(_), False, True ->
+          action_failed(
+            model,
+            "Enter valid cooldowns before starting the game.",
+          )
+        Ok(#(_, jwt)), False, False -> #(
           Model(..model, pending_action: True, action_error: None),
           rsvp.send(
             lobby_api.start_game_request(model.server_url, id, jwt),
@@ -486,7 +536,7 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
             ),
           ),
         )
-        _, _ -> #(model, effect.none())
+        _, _, _ -> #(model, effect.none())
       }
     GameStarted(_, id, Ok(lobby_api.StartGameResponse(True))) ->
       update(model, RouteChanged(Play(id)))
@@ -528,12 +578,197 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
     GameLeft(_, Error(error)) | GameCancelled(_, Error(error)) ->
       action_failed(model, action_error(error))
+    PlayerCooldownChanged(target, value) -> #(
+      Model(
+        ..model,
+        cooldown_drafts: dict.insert(model.cooldown_drafts, target, value),
+      ),
+      effect.none(),
+    )
+    KickPlayerPressed(id, target) ->
+      case host_room(model, id), model.pending_action {
+        Ok(#(jwt, details)), False if target != details.host -> {
+          case list.contains(details.players, target) {
+            False -> #(model, effect.none())
+            True -> #(
+              Model(..model, pending_action: True, action_error: None),
+              rsvp.send(
+                lobby_api.kick_player_request(model.server_url, id, jwt, target),
+                rsvp.expect_ok_response(fn(result) {
+                  PlayerKicked(
+                    model.page_version,
+                    target,
+                    result |> result.replace(Nil),
+                  )
+                }),
+              ),
+            )
+          }
+        }
+        _, _ -> #(model, effect.none())
+      }
+    PlayerKicked(_, target, Ok(Nil)) ->
+      case model.current_game {
+        Some(details) -> {
+          let players =
+            list.filter(details.players, fn(name) { name != target })
+          room_changed(
+            model,
+            lobby_api.GameDetails(
+              ..details,
+              players: players,
+              player_count: list.length(players),
+              cooldowns: dict.delete(details.cooldowns, target),
+            ),
+            target,
+          )
+        }
+        None -> #(model, effect.none())
+      }
+    PlayerKicked(_, _, Error(error)) ->
+      action_failed(model, action_error(error))
+    SetPlayerCooldownPressed(id, target) ->
+      case host_room(model, id), model.pending_action {
+        Ok(#(jwt, details)), False -> {
+          let seconds = cooldown_value(model, details, target) |> int.parse
+          let unchanged = case seconds {
+            Ok(seconds) -> dict.get(details.cooldowns, target) == Ok(seconds)
+            Error(_) -> False
+          }
+          case seconds, unchanged {
+            Ok(_), True -> #(
+              Model(
+                ..model,
+                cooldown_drafts: dict.delete(model.cooldown_drafts, target),
+                action_error: None,
+              ),
+              effect.none(),
+            )
+            Ok(seconds), False ->
+              case
+                shared_game.valid_player_cooldown(details.settings, seconds)
+                && list.contains(details.players, target)
+              {
+                True -> #(
+                  Model(
+                    ..model,
+                    pending_action: True,
+                    saving_cooldown: True,
+                    action_error: None,
+                  ),
+                  rsvp.send(
+                    lobby_api.player_cooldown_request(
+                      model.server_url,
+                      id,
+                      jwt,
+                      target,
+                      seconds,
+                    ),
+                    rsvp.expect_ok_response(fn(result) {
+                      PlayerCooldownSet(
+                        model.page_version,
+                        target,
+                        seconds,
+                        result |> result.replace(Nil),
+                      )
+                    }),
+                  ),
+                )
+                False ->
+                  action_failed(
+                    model,
+                    "Cooldown must be at least the game's base cooldown and at most 3600 seconds.",
+                  )
+              }
+            Error(_), _ ->
+              action_failed(
+                model,
+                "Enter a whole number of seconds for the player's cooldown.",
+              )
+          }
+        }
+        _, _ -> #(model, effect.none())
+      }
+    PlayerCooldownSet(_, target, seconds, Ok(Nil)) ->
+      case model.current_game {
+        Some(details) -> {
+          let queued = model.after_save
+          let #(updated, refresh) =
+            room_changed(
+              model,
+              lobby_api.GameDetails(
+                ..details,
+                cooldowns: dict.insert(details.cooldowns, target, seconds),
+              ),
+              target,
+            )
+          case queued {
+            None -> #(updated, refresh)
+            Some(action) -> {
+              let #(updated, follow_up) = update(updated, action)
+              #(updated, effect.batch([refresh, follow_up]))
+            }
+          }
+        }
+        None -> #(model, effect.none())
+      }
+    PlayerCooldownSet(_, _, _, Error(error)) ->
+      action_failed(model, action_error(error))
     OpenGame(id) -> #(model, modem.push(route_to_str(Play(id)), None, None))
     BackToLobby -> #(
       model,
       modem.push(route_to_str(CreateJoinGame), None, None),
     )
   }
+}
+
+fn host_room(
+  model: Model,
+  id: String,
+) -> Result(#(String, lobby_api.GameDetails), Nil) {
+  case credentials(model), model.current_game {
+    Ok(#(name, jwt)), Some(details)
+      if details.host == name
+      && details.id == id
+      && details.phase == shared_game.Negotiating
+    -> Ok(#(jwt, details))
+    _, _ -> Error(Nil)
+  }
+}
+
+fn cooldown_value(
+  model: Model,
+  details: lobby_api.GameDetails,
+  name: String,
+) -> String {
+  dict.get(model.cooldown_drafts, name)
+  |> result.unwrap({
+    dict.get(details.cooldowns, name)
+    |> result.unwrap(shared_game.base_cooldown(details.settings))
+    |> int.to_string
+  })
+}
+
+fn room_changed(
+  model: Model,
+  details: lobby_api.GameDetails,
+  target: String,
+) -> #(Model, Effect(Msg)) {
+  // Retain the visible room, but invalidate any pre-edit polls and timers.
+  let model =
+    Model(
+      ..model,
+      current_game: Some(details),
+      cooldown_drafts: dict.delete(model.cooldown_drafts, target),
+      page_version: model.page_version + 1,
+      loading_game: True,
+      pending_action: False,
+      saving_cooldown: False,
+      after_save: None,
+      load_error: None,
+      action_error: None,
+    )
+  #(model, load_game(model, details.id))
 }
 
 fn duration_in_s(d: Duration) -> #(String, String) {
@@ -739,6 +974,74 @@ fn view_lobby(model: Model) -> Element(Msg) {
   ])
 }
 
+fn room_controls_busy(model: Model) -> Bool {
+  model.pending_action && !model.saving_cooldown || model.after_save != None
+}
+
+fn view_player(
+  model: Model,
+  details: lobby_api.GameDetails,
+  name: String,
+  is_host: Bool,
+) -> Element(Msg) {
+  let seconds =
+    dict.get(details.cooldowns, name)
+    |> result.unwrap(shared_game.base_cooldown(details.settings))
+  html.li(
+    [attribute.class("player-row"), attribute.attribute("data-player", name)],
+    [
+      html.div([], [
+        html.span([attribute.class("player-name")], [html.text(name)]),
+        html.small([attribute.class("player-cooldown")], [
+          html.text(int.to_string(seconds) <> "s between moves"),
+        ]),
+      ]),
+      case is_host {
+        False -> html.text("")
+        True ->
+          html.div([attribute.class("player-controls")], [
+            html.input([
+              attribute.type_("number"),
+              attribute.min(
+                int.to_string(shared_game.base_cooldown(details.settings)),
+              ),
+              attribute.max(int.to_string(shared_game.max_player_cooldown)),
+              attribute.required(True),
+              attribute.attribute("aria-label", "Cooldown seconds for " <> name),
+              attribute.value(cooldown_value(model, details, name)),
+              attribute.disabled(model.pending_action),
+              event.on_input(fn(value) { PlayerCooldownChanged(name, value) }),
+              event.on_blur(SetPlayerCooldownPressed(details.id, name)),
+              event.advanced("keydown", {
+                use key <- decode.field("key", decode.string)
+                let handler =
+                  event.handler(
+                    SetPlayerCooldownPressed(details.id, name),
+                    True,
+                    False,
+                  )
+                case key {
+                  "Enter" -> decode.success(handler)
+                  _ -> decode.failure(handler, "Enter")
+                }
+              }),
+            ]),
+            html.button(
+              [
+                attribute.class("kick-player"),
+                attribute.disabled(
+                  name == details.host || room_controls_busy(model),
+                ),
+                event.on_click(KickPlayerPressed(details.id, name)),
+              ],
+              [html.text("Kick")],
+            ),
+          ])
+      },
+    ],
+  )
+}
+
 fn view_game_room(model: Model, details: lobby_api.GameDetails) -> Element(Msg) {
   let lobby_api.GameDetails(id:, host:, players:, player_count:, ..) = details
   let #(is_host, is_member) = case credentials(model) {
@@ -756,50 +1059,60 @@ fn view_game_room(model: Model, details: lobby_api.GameDetails) -> Element(Msg) 
     html.p([], [html.text("Share this page's URL to invite players.")]),
     html.div([attribute.class("lobby-section")], [
       html.h2([], [html.text("Players")]),
-      html.ul(
-        [],
-        list.map(players, fn(name) { html.li([], [html.text(name)]) }),
+      html.p([], [
+        html.text(
+          "Longer cooldowns handicap a player by making them wait longer between moves.",
+        ),
+      ]),
+      keyed.ul(
+        [attribute.class("players-list")],
+        list.map(players, fn(name) {
+          #(name, view_player(model, details, name, is_host))
+        }),
       ),
     ]),
-    case is_host, is_member {
-      True, _ ->
-        html.button(
-          [
-            attribute.disabled(player_count < 2 || model.pending_action),
-            event.on_click(StartGamePressed(id)),
-          ],
-          [html.text("Start game")],
-        )
-      _, False ->
-        html.button(
-          [
-            attribute.disabled(model.pending_action),
-            event.on_click(JoinGamePressed(id)),
-          ],
-          [html.text("Join game")],
-        )
-      _, True -> html.p([], [html.text("Waiting for host to start the game.")])
-    },
-    case is_host, is_member {
-      True, _ ->
-        html.button(
-          [
-            attribute.class("danger"),
-            attribute.disabled(model.pending_action),
-            event.on_click(CancelGamePressed(id)),
-          ],
-          [html.text("Cancel game")],
-        )
-      False, True ->
-        html.button(
-          [
-            attribute.disabled(model.pending_action),
-            event.on_click(LeaveGamePressed(id)),
-          ],
-          [html.text("Leave game")],
-        )
-      _, _ -> html.text("")
-    },
+    html.div([attribute.class("game-actions")], [
+      case is_host, is_member {
+        True, _ ->
+          html.button(
+            [
+              attribute.disabled(player_count < 2 || room_controls_busy(model)),
+              event.on_click(StartGamePressed(id)),
+            ],
+            [html.text("Start game")],
+          )
+        _, False ->
+          html.button(
+            [
+              attribute.disabled(model.pending_action),
+              event.on_click(JoinGamePressed(id)),
+            ],
+            [html.text("Join game")],
+          )
+        _, True ->
+          html.p([], [html.text("Waiting for host to start the game.")])
+      },
+      case is_host, is_member {
+        True, _ ->
+          html.button(
+            [
+              attribute.class("danger"),
+              attribute.disabled(room_controls_busy(model)),
+              event.on_click(CancelGamePressed(id)),
+            ],
+            [html.text("Cancel game")],
+          )
+        False, True ->
+          html.button(
+            [
+              attribute.disabled(model.pending_action),
+              event.on_click(LeaveGamePressed(id)),
+            ],
+            [html.text("Leave game")],
+          )
+        _, _ -> html.text("")
+      },
+    ]),
   ])
 }
 

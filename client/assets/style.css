@@ -83,7 +83,18 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow
 .create-game { display: grid; grid-template-columns: auto 1fr; align-items: center; gap: 12px; margin: 24px 0; }
 .create-game h2, .create-game button { grid-column: 1 / -1; }
 .create-game select, .create-game input { min-width: 0; width: 100%; box-sizing: border-box; }
-.danger { color: #A20; margin-top: 16px; }
+.login-form, .game-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.login-form label { flex-basis: 100%; }
+.game-actions { margin-top: 16px; }
+.danger { color: #A20; }
+.players-list { list-style: none; padding: 0; }
+.player-row { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 12px; padding: 12px 0; border-bottom: 1px solid #DDD; }
+.player-name { font-weight: 700; }
+.player-cooldown { display: block; margin-top: 4px; color: #555; }
+.player-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.player-controls input { width: 7em; }
+.kick-player { color: #A20; }
+.kick-player:disabled { color: #777; }
 @media screen and (max-width: 600px) {
   .game-row, .create-game { grid-template-columns: 1fr; }
 }

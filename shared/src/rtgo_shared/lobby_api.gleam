@@ -1,3 +1,4 @@
+import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/http.{Get, Post}
 import gleam/http/request
@@ -24,6 +25,7 @@ pub type GameDetails {
     players: List(String),
     player_count: Int,
     settings: game.Settings,
+    cooldowns: Dict(String, Int),
   )
 }
 
@@ -101,6 +103,57 @@ pub fn cancel_game_request(
   authenticated_request(server_url <> games_path <> "/" <> id <> "/cancel", jwt)
 }
 
+pub fn kick_player_request(
+  server_url: String,
+  id: String,
+  jwt: String,
+  player: String,
+) -> request.Request(String) {
+  authenticated_json_request(
+    server_url <> games_path <> "/" <> id <> "/kick",
+    jwt,
+    json.object([#("player", json.string(player))]),
+  )
+}
+
+pub fn kick_player_request_decoder() -> decode.Decoder(String) {
+  use player <- decode.field("player", decode.string)
+  decode.success(player)
+}
+
+pub fn player_cooldown_request(
+  server_url: String,
+  id: String,
+  jwt: String,
+  player: String,
+  seconds: Int,
+) -> request.Request(String) {
+  authenticated_json_request(
+    server_url <> games_path <> "/" <> id <> "/cooldown",
+    jwt,
+    json.object([
+      #("player", json.string(player)),
+      #("cooldown_seconds", json.int(seconds)),
+    ]),
+  )
+}
+
+pub fn player_cooldown_request_decoder() -> decode.Decoder(#(String, Int)) {
+  use player <- decode.field("player", decode.string)
+  use seconds <- decode.field("cooldown_seconds", decode.int)
+  decode.success(#(player, seconds))
+}
+
+fn authenticated_json_request(
+  url: String,
+  jwt: String,
+  body: json.Json,
+) -> request.Request(String) {
+  authenticated_request(url, jwt)
+  |> request.set_header("content-type", "application/json")
+  |> request.set_body(json.to_string(body))
+}
+
 fn authenticated_request(url: String, jwt: String) -> request.Request(String) {
   let assert Ok(uri) = uri.parse(url)
   let assert Ok(req) = request.from_uri(uri)
@@ -147,13 +200,21 @@ pub fn game_metadata_decoder() -> decode.Decoder(GameMetadata) {
 }
 
 pub fn game_details_to_json(details: GameDetails) -> json.Json {
-  let GameDetails(id:, phase:, host:, players:, player_count:, settings:) =
-    details
+  let GameDetails(
+    id:,
+    phase:,
+    host:,
+    players:,
+    player_count:,
+    settings:,
+    cooldowns:,
+  ) = details
   json.object([
     #("id", json.string(id)),
     #("phase", phase_to_json(phase)),
     #("host", json.string(host)),
     #("players", json.array(players, json.string)),
+    #("cooldowns", json.dict(cooldowns, fn(name) { name }, json.int)),
     #("player_count", json.int(player_count)),
     #("settings", game.settings_to_json(settings)),
   ])
@@ -164,6 +225,10 @@ pub fn game_details_decoder() -> decode.Decoder(GameDetails) {
   use phase <- decode.field("phase", phase_decoder())
   use host <- decode.field("host", decode.string)
   use players <- decode.field("players", decode.list(decode.string))
+  use cooldowns <- decode.field(
+    "cooldowns",
+    decode.dict(decode.string, decode.int),
+  )
   use player_count <- decode.field("player_count", decode.int)
   use settings <- decode.field("settings", game.settings_decoder())
   decode.success(GameDetails(
@@ -173,6 +238,7 @@ pub fn game_details_decoder() -> decode.Decoder(GameDetails) {
     players:,
     player_count:,
     settings:,
+    cooldowns:,
   ))
 }
 

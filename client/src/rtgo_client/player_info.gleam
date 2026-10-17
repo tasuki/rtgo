@@ -85,7 +85,7 @@ pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
   }
 
   let registration_form =
-    html.form([event.on_submit(msg_handler)], [
+    html.form([attribute.class("login-form"), event.on_submit(msg_handler)], [
       html.label([attribute.for("username")], [html.text("Choose your name...")]),
       html.input([
         attribute.id("username"),

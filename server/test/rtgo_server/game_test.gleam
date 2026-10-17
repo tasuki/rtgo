@@ -12,8 +12,19 @@ fn players() {
   ])
 }
 
+fn start_game() {
+  game.start(
+    players(),
+    shared_game.default_settings,
+    shared_game.default_cooldowns(
+      ["alice", "bob"],
+      shared_game.default_settings,
+    ),
+  )
+}
+
 pub fn started_game_accepts_moves_test() {
-  let actor = game.start(players(), shared_game.default_settings)
+  let actor = start_game()
 
   should.equal(game.play(actor, "alice", #(3, 3)), Ok(Nil))
 
@@ -26,7 +37,7 @@ pub fn started_game_accepts_moves_test() {
 }
 
 pub fn unknown_player_cannot_move_test() {
-  let actor = game.start(players(), shared_game.default_settings)
+  let actor = start_game()
 
   should.equal(game.play(actor, "charlie", #(3, 3)), Error(game.UnknownPlayer))
 }

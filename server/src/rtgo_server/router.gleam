@@ -16,7 +16,8 @@ import wisp.{type Request, type Response}
 
 fn game_details(id: String, entry: lobby.Entry) -> lobby_api.GameDetails {
   case entry {
-    lobby.Open(lobby.Lobby(host:, players:, settings:)) ->
+    lobby.Open(room) -> {
+      let lobby.Lobby(host:, players:, settings:, ..) = room
       lobby_api.GameDetails(
         id: id,
         phase: shared_game.Negotiating,
@@ -24,9 +25,11 @@ fn game_details(id: String, entry: lobby.Entry) -> lobby_api.GameDetails {
         players: list.sort(dict.keys(players), string.compare),
         player_count: dict.size(players),
         settings: settings,
+        cooldowns: lobby.player_cooldowns(room),
       )
+    }
     lobby.Running(host:, subject:, settings:) -> {
-      let game.Snapshot(players:, ..) = game.get_game(subject)
+      let game.Snapshot(players:, cooldowns:, ..) = game.get_game(subject)
       let names = list.sort(dict.keys(players), string.compare)
       lobby_api.GameDetails(
         id: id,
@@ -35,6 +38,7 @@ fn game_details(id: String, entry: lobby.Entry) -> lobby_api.GameDetails {
         players: names,
         player_count: dict.size(players),
         settings: settings,
+        cooldowns: cooldowns,
       )
     }
   }
@@ -133,6 +137,10 @@ pub fn handle(
               joined,
             )),
           )
+        Error(lobby.Kicked) ->
+          json_response(403, [
+            #("msg", json.string("You were kicked from this room by the host")),
+          ])
         Error(_) ->
           json_response(404, [#("msg", json.string("404: Not Found"))])
       }
@@ -165,6 +173,31 @@ pub fn handle(
       change_response(lobby.cancel_game(lobby_actor, id, username))
     }
 
+    Post, ["games", id, "kick"] -> {
+      use username <- router_utils.require_player(req, players_actor)
+      use target <- router_utils.on_json(
+        req,
+        lobby_api.kick_player_request_decoder,
+      )
+      change_response(lobby.kick_player(lobby_actor, id, username, target))
+    }
+
+    Post, ["games", id, "cooldown"] -> {
+      use username <- router_utils.require_player(req, players_actor)
+      use change <- router_utils.on_json(
+        req,
+        lobby_api.player_cooldown_request_decoder,
+      )
+      let #(target, seconds) = change
+      change_response(lobby.set_player_cooldown(
+        lobby_actor,
+        id,
+        username,
+        target,
+        seconds,
+      ))
+    }
+
     _, _ ->
       json_response(404, [
         #("msg", json.string("404: Not Found")),
@@ -178,7 +211,9 @@ fn change_response(result: Result(Nil, lobby.Error)) -> Response {
     Error(lobby.GameNotFound) ->
       json_response(404, [#("msg", json.string("Game not found"))])
     Error(lobby.NotHost) ->
-      json_response(403, [#("msg", json.string("Only the host can cancel"))])
+      json_response(403, [
+        #("msg", json.string("Only the host can perform this action")),
+      ])
     Error(lobby.HostMustCancel) ->
       json_response(409, [
         #("msg", json.string("The host must cancel instead of leaving")),
@@ -187,6 +222,30 @@ fn change_response(result: Result(Nil, lobby.Error)) -> Response {
       json_response(409, [#("msg", json.string("The game has already started"))])
     Error(lobby.InvalidSettings) ->
       json_response(400, [#("msg", json.string("Invalid game settings"))])
+    Error(lobby.PlayerNotFound) ->
+      json_response(404, [
+        #("msg", json.string("Player is no longer in this room")),
+      ])
+    Error(lobby.CannotKickHost) ->
+      json_response(409, [
+        #(
+          "msg",
+          json.string("The host cannot be kicked; cancel the room instead"),
+        ),
+      ])
+    Error(lobby.InvalidPlayerCooldown) ->
+      json_response(400, [
+        #(
+          "msg",
+          json.string(
+            "Player cooldown must be at least the game's base cooldown and at most 3600 seconds",
+          ),
+        ),
+      ])
+    Error(lobby.Kicked) ->
+      json_response(403, [
+        #("msg", json.string("You were kicked from this room by the host")),
+      ])
   }
 }
 // TODO handle 5xx with json too

@@ -39,6 +39,18 @@ rejoin later. Only the host can **Cancel game**, removing the room for everyone.
 The host must cancel rather than leave. These actions are rejected after start;
 **Back to lobby** is only navigation and does not relinquish a seat.
 
+The waiting-room host can also **Kick** guests (blocking that identity from
+rejoining the room) and edit the cooldown for any player, including themselves.
+Cooldown edits save when the field loses focus or Enter is pressed; there is no
+separate save button. Invalid or failed edits stay visible with an error, and a
+start/kick/cancel click waits for an in-progress save rather than discarding it.
+A player's cooldown may range from the game's base cooldown up to 3600 seconds;
+setting it back to the base removes the handicap. Longer waits handicap stronger
+players, rather than giving a move deadline. Everyone can see these settings,
+and leaving/rejoining does not reset them. They are retained when the game starts,
+but, like the base cooldown, are not enforced by gameplay yet. Kicking and editing
+cooldowns are only allowed before start.
+
 The lobby and waiting room refresh automatically every second. State is currently
 in memory and disappears on server restart.
 

@@ -4,6 +4,7 @@ import gleam/int
 import gleam/list
 import gleam/otp/actor
 import gleam/result
+import gleam/set.{type Set}
 import rtgo_server/game
 import rtgo_server/log
 import rtgo_shared/game as shared_game
@@ -28,6 +29,8 @@ pub type Lobby {
     host: String,
     players: Dict(String, player.Player),
     settings: shared_game.Settings,
+    cooldowns: Dict(String, Int),
+    kicked: Set(String),
   )
 }
 
@@ -45,6 +48,10 @@ pub type Error {
   HostMustCancel
   AlreadyStarted
   InvalidSettings
+  PlayerNotFound
+  CannotKickHost
+  InvalidPlayerCooldown
+  Kicked
 }
 
 pub type Message {
@@ -59,6 +66,19 @@ pub type Message {
   StartGame(id: String, name: String, reply: Subject(Result(Bool, Error)))
   LeaveGame(id: String, name: String, reply: Subject(Result(Nil, Error)))
   CancelGame(id: String, name: String, reply: Subject(Result(Nil, Error)))
+  KickPlayer(
+    id: String,
+    host: String,
+    player: String,
+    reply: Subject(Result(Nil, Error)),
+  )
+  SetPlayerCooldown(
+    id: String,
+    host: String,
+    player: String,
+    seconds: Int,
+    reply: Subject(Result(Nil, Error)),
+  )
 }
 
 fn generate_new_id(state: State) -> String {
@@ -149,7 +169,17 @@ fn handle_create_game(
       let new_id = generate_new_id(state)
       let assert Ok(players) = add_player(dict.new(), host, settings)
       let new_games =
-        dict.insert(state.games, new_id, Open(Lobby(host, players, settings)))
+        dict.insert(
+          state.games,
+          new_id,
+          Open(Lobby(
+            host,
+            players,
+            settings,
+            shared_game.default_cooldowns([host], settings),
+            set.new(),
+          )),
+        )
       log.info("Created new game: " <> new_id)
       process.send(reply, Ok(new_id))
       actor.continue(State(new_games))
@@ -166,19 +196,34 @@ fn handle_join_game(
   case dict.get(state.games, id) {
     Ok(Open(lobby)) -> {
       let Lobby(players:, settings:, ..) = lobby
-      case dict.has_key(players, name) {
-        True -> {
+      case set.contains(lobby.kicked, name), dict.has_key(players, name) {
+        True, _ -> {
+          process.send(reply, Error(Kicked))
+          actor.continue(state)
+        }
+        _, True -> {
           process.send(reply, Ok(True))
           actor.continue(state)
         }
-        False -> {
+        _, False -> {
           case add_player(players, name, settings) {
             Ok(new_players) -> {
               let new_games =
                 dict.insert(
                   state.games,
                   id,
-                  Open(Lobby(..lobby, players: new_players)),
+                  Open(
+                    Lobby(
+                      ..lobby,
+                      players: new_players,
+                      cooldowns: dict.insert(
+                        lobby.cooldowns,
+                        name,
+                        dict.get(lobby.cooldowns, name)
+                          |> result.unwrap(shared_game.base_cooldown(settings)),
+                      ),
+                    ),
+                  ),
                 )
               log.info("Player " <> name <> " joined game " <> id)
               process.send(reply, Ok(True))
@@ -210,7 +255,8 @@ fn handle_start_game(
   reply: Subject(Result(Bool, Error)),
 ) -> actor.Next(State, Message) {
   case dict.get(state.games, id) {
-    Ok(Open(Lobby(host:, players:, settings:))) -> {
+    Ok(Open(lobby)) -> {
+      let Lobby(host:, players:, settings:, ..) = lobby
       case name != host {
         True -> {
           process.send(reply, Error(NotHost))
@@ -219,7 +265,8 @@ fn handle_start_game(
         False -> {
           case dict.size(players) >= 2 {
             True -> {
-              let subject = game.start(players, settings)
+              let subject =
+                game.start(players, settings, player_cooldowns(lobby))
               let new_games =
                 dict.insert(
                   state.games,
@@ -275,6 +322,70 @@ fn cancel(state: State, id: String, name: String) -> Result(State, Error) {
   }
 }
 
+/// Only active players are exposed or passed to the running game. Remember
+/// departed players' settings so leaving/rejoining cannot shed a handicap.
+pub fn player_cooldowns(lobby: Lobby) -> Dict(String, Int) {
+  dict.filter(lobby.cooldowns, fn(name, _) { dict.has_key(lobby.players, name) })
+}
+
+fn hosted_lobby(state: State, id: String, name: String) -> Result(Lobby, Error) {
+  use entry <- result.try(
+    dict.get(state.games, id) |> result.replace_error(GameNotFound),
+  )
+  case entry {
+    Open(lobby) if lobby.host == name -> Ok(lobby)
+    Open(_) -> Error(NotHost)
+    Running(host:, ..) if host != name -> Error(NotHost)
+    Running(..) -> Error(AlreadyStarted)
+  }
+}
+
+fn kick(
+  state: State,
+  id: String,
+  host: String,
+  target: String,
+) -> Result(State, Error) {
+  use lobby <- result.try(hosted_lobby(state, id, host))
+  case target == lobby.host {
+    True -> Error(CannotKickHost)
+    False -> {
+      use _ <- result.try(
+        dict.get(lobby.players, target) |> result.replace_error(PlayerNotFound),
+      )
+      let lobby =
+        Lobby(
+          ..lobby,
+          players: dict.delete(lobby.players, target),
+          cooldowns: dict.delete(lobby.cooldowns, target),
+          kicked: set.insert(lobby.kicked, target),
+        )
+      Ok(State(dict.insert(state.games, id, Open(lobby))))
+    }
+  }
+}
+
+fn set_cooldown(
+  state: State,
+  id: String,
+  host: String,
+  target: String,
+  seconds: Int,
+) -> Result(State, Error) {
+  use lobby <- result.try(hosted_lobby(state, id, host))
+  use _ <- result.try(
+    dict.get(lobby.players, target) |> result.replace_error(PlayerNotFound),
+  )
+  case shared_game.valid_player_cooldown(lobby.settings, seconds) {
+    False -> Error(InvalidPlayerCooldown)
+    True -> {
+      let lobby =
+        Lobby(..lobby, cooldowns: dict.insert(lobby.cooldowns, target, seconds))
+      Ok(State(dict.insert(state.games, id, Open(lobby))))
+    }
+  }
+}
+
 fn finish_change(
   state: State,
   reply: Subject(Result(Nil, Error)),
@@ -313,6 +424,14 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       finish_change(state, reply, leave(state, id, name))
     CancelGame(id, name, reply) ->
       finish_change(state, reply, cancel(state, id, name))
+    KickPlayer(id, host, target, reply) ->
+      finish_change(state, reply, kick(state, id, host, target))
+    SetPlayerCooldown(id, host, target, seconds, reply) ->
+      finish_change(
+        state,
+        reply,
+        set_cooldown(state, id, host, target, seconds),
+      )
   }
 }
 
@@ -362,6 +481,27 @@ pub fn leave_game(
   name: String,
 ) -> Result(Nil, Error) {
   process.call(subject, 100, fn(reply) { LeaveGame(id, name, reply) })
+}
+
+pub fn kick_player(
+  subject: Subject(Message),
+  id: String,
+  host: String,
+  target: String,
+) -> Result(Nil, Error) {
+  process.call(subject, 100, fn(reply) { KickPlayer(id, host, target, reply) })
+}
+
+pub fn set_player_cooldown(
+  subject: Subject(Message),
+  id: String,
+  host: String,
+  target: String,
+  seconds: Int,
+) -> Result(Nil, Error) {
+  process.call(subject, 100, fn(reply) {
+    SetPlayerCooldown(id, host, target, seconds, reply)
+  })
 }
 
 pub fn cancel_game(

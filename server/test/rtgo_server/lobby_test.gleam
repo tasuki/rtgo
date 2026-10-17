@@ -83,6 +83,12 @@ pub fn leaving_a_full_multiplayer_game_frees_its_color_test() {
   let assert Ok(replacement) = dict.get(after.players, "p8")
   should.equal(replacement.color, departing.color)
   should.equal(dict.has_key(after.players, "p3"), False)
+  should.equal(lobby.kick_player(actor, id, "host", "p8"), Ok(Nil))
+  should.equal(lobby.join_game(actor, id, "p8"), Error(lobby.Kicked))
+  should.equal(lobby.join_game(actor, id, "p9"), Ok(True))
+  let assert Ok(lobby.Open(kicked)) = lobby.get_game(actor, id)
+  let assert Ok(new_player) = dict.get(kicked.players, "p9")
+  should.equal(new_player.color, departing.color)
 }
 
 pub fn invalid_settings_do_not_create_a_room_test() {
