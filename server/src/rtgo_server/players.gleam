@@ -2,23 +2,30 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/order
 import gleam/otp/actor
+import gleam/result
 import gleam/string
 import gleam/time/duration.{type Duration}
 import gleam/time/timestamp.{type Timestamp}
 import rtgo_server/log
 import rtgo_shared/auth
+import rtgo_shared/player
 import ywt
 import ywt/claim
 import ywt/sign_key.{type SignKey}
 import ywt/verify_key
 
 type State {
-  State(sign_key: SignKey, users: Dict(String, Timestamp))
+  State(
+    sign_key: SignKey,
+    users: Dict(String, Timestamp),
+    preferences: Dict(String, player.Color),
+  )
 }
 
 pub type Message {
   Register(
     username: String,
+    preferred_color: player.Color,
     client: Subject(Result(auth.LogInResponse, auth.RegistrationFailedResponse)),
   )
   LogIn(
@@ -26,6 +33,8 @@ pub type Message {
     client: Subject(Result(auth.LogInResponse, auth.LogInFailedResponse)),
   )
   Authenticate(jwt: String, client: Subject(Result(String, Nil)))
+  GetPreferredColor(String, Subject(player.Color))
+  SetPreferredColor(String, player.Color, Subject(Nil))
   Prune(self: Subject(Message))
 }
 
@@ -71,7 +80,7 @@ fn process_login(
 fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
   let now = timestamp.system_time()
   case msg {
-    Register(username, client) -> {
+    Register(username, color, client) -> {
       let is_taken = case dict.get(state.users, username) {
         Ok(expiry) -> {
           case timestamp.compare(expiry, now) {
@@ -89,7 +98,15 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
         }
         False -> {
           log.info("Registering: " <> username)
-          process_login(state, username, now, client)
+          process_login(
+            State(
+              ..state,
+              preferences: dict.insert(state.preferences, username, color),
+            ),
+            username,
+            now,
+            client,
+          )
         }
       }
     }
@@ -126,6 +143,19 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       actor.continue(state)
     }
 
+    GetPreferredColor(name, reply) -> {
+      process.send(
+        reply,
+        dict.get(state.preferences, name) |> result.unwrap(player.Black),
+      )
+      actor.continue(state)
+    }
+    SetPreferredColor(name, color, reply) -> {
+      process.send(reply, Nil)
+      actor.continue(
+        State(..state, preferences: dict.insert(state.preferences, name, color)),
+      )
+    }
     Prune(self) -> {
       let new_users =
         dict.filter(state.users, fn(_, expiry) {
@@ -148,14 +178,24 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       }
 
       process.send_after(self, 1000, Prune(self))
-      actor.continue(State(..state, users: new_users))
+      actor.continue(
+        State(
+          ..state,
+          users: new_users,
+          preferences: dict.take(state.preferences, dict.keys(new_users)),
+        ),
+      )
     }
   }
 }
 
 pub fn start(sign_key: SignKey) -> Subject(Message) {
   let assert Ok(actor) =
-    actor.new(State(sign_key: sign_key, users: dict.new()))
+    actor.new(State(
+      sign_key: sign_key,
+      users: dict.new(),
+      preferences: dict.new(),
+    ))
     |> actor.on_message(handle_message)
     |> actor.start
   let subject = actor.data
@@ -167,7 +207,32 @@ pub fn try_register(
   subject: Subject(Message),
   username: String,
 ) -> Result(auth.LogInResponse, auth.RegistrationFailedResponse) {
-  process.call(subject, 100, fn(client) { Register(username, client) })
+  try_register_with_color(subject, username, player.Black)
+}
+
+pub fn try_register_with_color(
+  subject: Subject(Message),
+  username: String,
+  color: player.Color,
+) -> Result(auth.LogInResponse, auth.RegistrationFailedResponse) {
+  process.call(subject, 100, fn(client) { Register(username, color, client) })
+}
+
+pub fn preferred_color(
+  subject: Subject(Message),
+  username: String,
+) -> player.Color {
+  process.call(subject, 100, fn(reply) { GetPreferredColor(username, reply) })
+}
+
+pub fn set_preferred_color(
+  subject: Subject(Message),
+  username: String,
+  color: player.Color,
+) -> Nil {
+  process.call(subject, 100, fn(reply) {
+    SetPreferredColor(username, color, reply)
+  })
 }
 
 /// Verify a token without renewing it or changing the registration state.

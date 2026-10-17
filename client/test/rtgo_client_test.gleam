@@ -48,6 +48,7 @@ fn room(
     list.length(players),
     game.default_settings,
     game.default_cooldowns(players, game.default_settings),
+    dict.new(),
   ))
 }
 
@@ -266,6 +267,7 @@ pub fn creation_settings_are_validated_and_selected_board_is_used_test() {
       2,
       settings,
       game.default_cooldowns(["alice", "bob"], settings),
+      dict.new(),
     )
   let loaded =
     step(

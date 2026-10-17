@@ -13,6 +13,7 @@ import rtgo_shared/auth
 import rtgo_shared/auth_api
 import rtgo_shared/game
 import rtgo_shared/lobby_api
+import rtgo_shared/player
 import ywt
 import ywt/claim
 import ywt/sign_key
@@ -103,6 +104,7 @@ pub fn lobby_lifecycle_through_client_api_test() {
       2,
       settings,
       game.default_cooldowns(["alice", "zoe"], settings),
+      dict.from_list([#("zoe", player.Black), #("alice", player.White)]),
     ),
   )
   should.equal(
@@ -169,6 +171,7 @@ pub fn guests_can_leave_and_rejoin_but_only_host_can_cancel_test() {
       1,
       settings,
       game.default_cooldowns(["host"], settings),
+      dict.from_list([#("host", player.Black)]),
     ),
   )
   should.equal(

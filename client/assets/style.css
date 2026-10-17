@@ -116,6 +116,19 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow
 .create-game select, .create-game input { min-width: 0; width: 100%; box-sizing: border-box; }
 .login-form, .game-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .login-form label { flex-basis: 100%; }
+.room-color { display: flex; align-items: center; gap: 8px; }
+.color-picker { max-width: 100%; }
+.color-palette { display: flex; flex-wrap: wrap; gap: 6px; width: fit-content; max-width: 100%; box-sizing: border-box; padding: 8px;
+  background-color: #CB5;
+  background-image: linear-gradient(#0004 1px, transparent 1px), linear-gradient(90deg, #0004 1px, transparent 1px);
+  background-size: 32px 32px; background-position: 21px 21px; }
+.color-choice { flex: none; box-sizing: border-box; width: 26px; height: 26px; padding: 0;
+  border: 1px solid #222; border-radius: 50%; transition: none; }
+.color-choice[aria-pressed="true"] { box-shadow: 0 0 0 2px #CB5, 0 0 0 4px #222; }
+.color-choice:focus-visible { outline: 2px solid #06C; outline-offset: 2px; }
+.color-choice:disabled { opacity: 0.3; }
+.login-form .color-picker { flex-basis: 100%; }
+.player-color { flex: none; }
 .game-actions { margin-top: 16px; }
 .danger { color: #A20; }
 .players-list { list-style: none; padding: 0; }

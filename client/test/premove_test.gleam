@@ -34,6 +34,7 @@ fn cooling() -> app.Model {
       2,
       settings,
       game.default_cooldowns(["alice", "bob"], settings),
+      dict.from_list([#("alice", player.Black), #("bob", player.White)]),
     )
   let live =
     play_api.State(

@@ -21,8 +21,10 @@ import lustre/event
 import modem
 import rsvp
 import rtgo_client/board
+import rtgo_client/color_picker
 import rtgo_client/player_info
 import rtgo_shared/auth
+import rtgo_shared/auth_api
 import rtgo_shared/game as shared_game
 import rtgo_shared/go
 import rtgo_shared/lobby_api
@@ -45,6 +47,10 @@ pub type Model {
   Model(
     route: Route,
     player: player_info.PlayerStatus,
+    preferred_color: shared_player.Color,
+    pending_preference: Bool,
+    preference_version: Int,
+    preference_error: Option(String),
     ping: Option(Duration),
     server_url: String,
     game: go.Game,
@@ -82,6 +88,10 @@ pub fn initial_model(
   Model(
     route: route,
     player: player,
+    preferred_color: shared_player.Black,
+    pending_preference: False,
+    preference_version: 0,
+    preference_error: None,
     ping: None,
     server_url: server_url,
     game: go.new_game(19),
@@ -199,6 +209,15 @@ pub type Msg {
   PingRequested
   PingResponded(Result(Duration, rsvp.Error))
   Register(String)
+  PreferredColorChanged(String)
+  PreferredColorLoaded(Int, Result(shared_player.Color, rsvp.Error))
+  PreferredColorSaved(
+    Int,
+    shared_player.Color,
+    Result(shared_player.Color, rsvp.Error),
+  )
+  ChooseGameColor(String)
+  GameColorChosen(Int, String, shared_player.Color, Result(Nil, rsvp.Error))
   LoggedInResponse(Result(auth.LogInResponse, rsvp.Error))
   GamesLoaded(Int, Result(lobby_api.ListGamesResponse, rsvp.Error))
   GameLoaded(Int, Result(lobby_api.GetGameResponse, rsvp.Error))
@@ -300,12 +319,17 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     | PlayerCooldownSet(version, _, _, _)
     | BoardRefresh(version)
     | BoardLoaded(version, _)
-    | MoveResponded(version, _) -> version != model.page_version
+    | MoveResponded(version, _)
+    | GameColorChosen(version, _, _, _) -> version != model.page_version
+    PreferredColorLoaded(version, _) | PreferredColorSaved(version, _, _) ->
+      version != model.preference_version
     _ -> False
   }
   let follows_save = case msg {
-    StartGamePressed(_) | KickPlayerPressed(_, _) | CancelGamePressed(_) ->
-      model.saving_cooldown
+    StartGamePressed(_)
+    | KickPlayerPressed(_, _)
+    | CancelGamePressed(_)
+    | ChooseGameColor(_) -> model.saving_cooldown
     _ -> False
   }
   case stale, follows_save {
@@ -315,7 +339,14 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         None -> #(Model(..model, after_save: Some(msg)), effect.none())
         Some(_) -> #(model, effect.none())
       }
-    False, False -> update_current(model, msg)
+    False, False ->
+      case model.pending_preference, msg {
+        True, CreateGamePressed | True, JoinGamePressed(_) -> #(
+          model,
+          effect.none(),
+        )
+        _, _ -> update_current(model, msg)
+      }
   }
 }
 
@@ -364,14 +395,31 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
     Register(name) -> #(
       Model(..model, player: player_info.VerifyingName(name)),
-      player_info.register(model.server_url, name, LoggedInResponse),
+      player_info.register_with_color(
+        model.server_url,
+        name,
+        model.preferred_color,
+        LoggedInResponse,
+      ),
     )
     LoggedInResponse(Ok(lir)) -> {
       case player_info.decode_login_jwt(lir.jwt) {
         Ok(#(name, _exp)) -> #(
-          Model(..model, player: player_info.LoggedIn(name, lir.jwt)),
+          Model(
+            ..model,
+            player: player_info.LoggedIn(name, lir.jwt),
+            pending_preference: True,
+            preference_version: model.preference_version + 1,
+            preference_error: None,
+          ),
           effect.batch([
             player_info.save_login(lir.jwt),
+            rsvp.send(
+              auth_api.preferred_color_request(model.server_url, lir.jwt),
+              rsvp.expect_json(auth_api.preferred_color_decoder(), fn(res) {
+                PreferredColorLoaded(model.preference_version + 1, res)
+              }),
+            ),
             // Preserve a shared room link across login/registration.
             case model.route {
               PlayerInfo ->
@@ -401,7 +449,12 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           case player_info.desired_name(model.player) {
             Ok(name) -> #(
               player_info.VerifyingName(name),
-              player_info.register(model.server_url, name, LoggedInResponse),
+              player_info.register_with_color(
+                model.server_url,
+                name,
+                model.preferred_color,
+                LoggedInResponse,
+              ),
             )
             Error(_) -> #(
               player_info.OtherError("Login failed."),
@@ -425,6 +478,149 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       }
       #(Model(..model, player: player), eff)
     }
+    PreferredColorChanged(value) ->
+      case shared_player.color_from_name(value) {
+        Error(_) -> #(model, effect.none())
+        Ok(color) ->
+          case
+            credentials(model),
+            model.pending_preference || model.pending_action
+          {
+            Ok(#(_, jwt)), False if color != model.preferred_color -> #(
+              Model(
+                ..model,
+                preferred_color: color,
+                pending_preference: True,
+                preference_version: model.preference_version + 1,
+                preference_error: None,
+              ),
+              rsvp.send(
+                auth_api.set_preferred_color_request(
+                  model.server_url,
+                  jwt,
+                  color,
+                ),
+                rsvp.expect_json(auth_api.preferred_color_decoder(), fn(res) {
+                  PreferredColorSaved(
+                    model.preference_version + 1,
+                    model.preferred_color,
+                    res,
+                  )
+                }),
+              ),
+            )
+            Error(_), _ -> #(
+              Model(..model, preferred_color: color),
+              effect.none(),
+            )
+            _, _ -> #(model, effect.none())
+          }
+      }
+    PreferredColorLoaded(_, response) ->
+      case response {
+        Ok(color) -> #(
+          Model(
+            ..model,
+            preferred_color: color,
+            pending_preference: False,
+            preference_error: None,
+          ),
+          effect.none(),
+        )
+        Error(error) -> #(
+          Model(
+            ..model,
+            pending_preference: False,
+            preference_error: Some(action_error(error)),
+          ),
+          effect.none(),
+        )
+      }
+    PreferredColorSaved(_, previous, response) ->
+      case response {
+        Ok(color) -> #(
+          Model(
+            ..model,
+            preferred_color: color,
+            pending_preference: False,
+            preference_error: None,
+          ),
+          effect.none(),
+        )
+        Error(error) -> #(
+          Model(
+            ..model,
+            preferred_color: previous,
+            pending_preference: False,
+            preference_error: Some(action_error(error)),
+          ),
+          effect.none(),
+        )
+      }
+    ChooseGameColor(value) ->
+      case
+        model.route,
+        credentials(model),
+        model.current_game,
+        shared_player.color_from_name(value),
+        model.pending_action
+      {
+        Play(id), Ok(#(name, jwt)), Some(details), Ok(color), False
+          if details.id == id && details.phase == shared_game.Negotiating
+        -> {
+          let taken =
+            details.colors
+            |> dict.to_list
+            |> list.any(fn(entry) { entry.0 != name && entry.1 == color })
+          case
+            list.contains(details.players, name)
+            && list.contains(shared_game.colors(details.settings), color)
+            && !taken
+            && dict.get(details.colors, name) != Ok(color)
+          {
+            False -> #(model, effect.none())
+            True -> #(
+              Model(..model, pending_action: True, action_error: None),
+              rsvp.send(
+                lobby_api.choose_color_request(model.server_url, id, jwt, color),
+                rsvp.expect_ok_response(fn(res) {
+                  GameColorChosen(
+                    model.page_version,
+                    name,
+                    color,
+                    result.replace(res, Nil),
+                  )
+                }),
+              ),
+            )
+          }
+        }
+        _, _, _, _, _ -> #(model, effect.none())
+      }
+    GameColorChosen(_, name, color, Ok(Nil)) ->
+      case model.current_game {
+        Some(details) -> {
+          let model =
+            Model(
+              ..model,
+              current_game: Some(
+                lobby_api.GameDetails(
+                  ..details,
+                  colors: dict.insert(details.colors, name, color),
+                ),
+              ),
+              pending_action: False,
+              loading_game: True,
+              page_version: model.page_version + 1,
+              action_error: None,
+              load_error: None,
+            )
+          #(model, load_game(model, details.id))
+        }
+        None -> #(model, effect.none())
+      }
+    GameColorChosen(_, _, _, Error(error)) ->
+      action_failed(model, action_error(error))
     GamesLoaded(_, result) -> {
       let model = case result {
         Ok(lobby_api.ListGamesResponse(games)) ->
@@ -721,6 +917,7 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
               players: players,
               player_count: list.length(players),
               cooldowns: dict.delete(details.cooldowns, target),
+              colors: dict.delete(details.colors, target),
             ),
             target,
           )
@@ -1008,7 +1205,7 @@ fn view_game(model: Model, game: lobby_api.GameMetadata) -> Element(Msg) {
   html.button(
     [
       attribute.class("game-row"),
-      attribute.disabled(model.pending_action),
+      attribute.disabled(model.pending_action || model.pending_preference),
       event.on_click(click_msg),
     ],
     [
@@ -1134,7 +1331,10 @@ fn view_create_form(model: Model) -> Element(Msg) {
         event.on_input(CooldownChanged),
       ]),
       html.button(
-        [attribute.type_("submit"), attribute.disabled(model.pending_action)],
+        [
+          attribute.type_("submit"),
+          attribute.disabled(model.pending_action || model.pending_preference),
+        ],
         [html.text("Create game")],
       ),
     ],
@@ -1158,6 +1358,23 @@ fn view_lobby(model: Model) -> Element(Msg) {
       Ok(#(name, _)) -> html.p([], [html.text("Playing as " <> name)])
       Error(_) -> html.text("")
     },
+    color_picker.view(
+      "preferred-color",
+      "Preferred color",
+      Some(model.preferred_color),
+      shared_player.all_colors,
+      [],
+      model.pending_preference || model.pending_action,
+      PreferredColorChanged,
+    ),
+    case model.preference_error {
+      Some(message) ->
+        html.p(
+          [attribute.class("error"), attribute.attribute("role", "status")],
+          [html.text(message)],
+        )
+      None -> html.text("")
+    },
     view_errors(model),
     view_create_form(model),
     case
@@ -1175,6 +1392,55 @@ fn view_lobby(model: Model) -> Element(Msg) {
 
 fn room_controls_busy(model: Model) -> Bool {
   model.pending_action && !model.saving_cooldown || model.after_save != None
+}
+
+fn view_room_color(
+  model: Model,
+  details: lobby_api.GameDetails,
+  name: String,
+) -> Element(Msg) {
+  let color = dict.get(details.colors, name) |> option.from_result
+  case credentials(model) {
+    Ok(#(current, _)) if current == name -> {
+      let used =
+        details.colors
+        |> dict.to_list
+        |> list.filter_map(fn(entry) {
+          case entry.0 == name {
+            True -> Error(Nil)
+            False -> Ok(entry.1)
+          }
+        })
+      color_picker.view(
+        "game-color-" <> name,
+        "Your color",
+        color,
+        shared_game.colors(details.settings),
+        used,
+        room_controls_busy(model),
+        ChooseGameColor,
+      )
+    }
+    _ ->
+      case color {
+        None -> html.text("")
+        Some(color) ->
+          html.span([attribute.class("room-color")], [
+            html.span(
+              [
+                attribute.class("player-color"),
+                attribute.attribute("aria-hidden", "true"),
+                attribute.style(
+                  "background-color",
+                  shared_player.color_to_str(color),
+                ),
+              ],
+              [],
+            ),
+            html.text(shared_player.color_name(color)),
+          ])
+      }
+  }
 }
 
 fn view_player(
@@ -1195,6 +1461,7 @@ fn view_player(
           html.text(int.to_string(seconds) <> "s between moves"),
         ]),
       ]),
+      view_room_color(model, details, name),
       case is_host {
         False -> html.text("")
         True ->
@@ -1283,7 +1550,9 @@ fn view_game_room(model: Model, details: lobby_api.GameDetails) -> Element(Msg) 
         _, False ->
           html.button(
             [
-              attribute.disabled(model.pending_action),
+              attribute.disabled(
+                model.pending_action || model.pending_preference,
+              ),
               event.on_click(JoinGamePressed(id)),
             ],
             [html.text("Join game")],
@@ -1747,7 +2016,13 @@ pub fn view(model: Model) -> Element(Msg) {
           CreateJoinGame -> view_lobby(model)
           Play(_) -> view_play(model)
         }
-      _ -> player_info.view(model.player, Register)
+      _ ->
+        player_info.view(
+          model.player,
+          model.preferred_color,
+          PreferredColorChanged,
+          Register,
+        )
     },
   ])
 }

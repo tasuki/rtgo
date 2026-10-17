@@ -1,4 +1,5 @@
 import gleam/list
+import gleam/option.{Some}
 import gleam/result
 import lustre/attribute
 import lustre/effect.{type Effect}
@@ -6,8 +7,10 @@ import lustre/element/html
 import lustre/event
 import plinth/javascript/storage
 import rsvp
+import rtgo_client/color_picker
 import rtgo_shared/auth
 import rtgo_shared/auth_api
+import rtgo_shared/player
 import ywt
 
 // Model
@@ -50,8 +53,17 @@ pub fn decode_login_jwt(jwt: String) {
 }
 
 pub fn register(server_url: String, username: String, msg) -> Effect(msg) {
+  register_with_color(server_url, username, player.Black, msg)
+}
+
+pub fn register_with_color(
+  server_url: String,
+  username: String,
+  color: player.Color,
+  msg,
+) -> Effect(msg) {
   rsvp.send(
-    auth_api.register_request(server_url, username),
+    auth_api.register_request_with_color(server_url, username, color),
     rsvp.expect_json(auth.log_in_response_decoder(), msg),
   )
 }
@@ -78,7 +90,12 @@ pub fn default_login(server_url: String, msg) {
 
 // View
 
-pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
+pub fn view(
+  player_status: PlayerStatus,
+  preferred_color: player.Color,
+  on_color: fn(String) -> a,
+  submit_name_msg: fn(String) -> a,
+) {
   let msg_handler = fn(form_data: List(#(String, String))) {
     let name = form_data |> list.key_find("username") |> result.unwrap("")
     submit_name_msg(name)
@@ -93,6 +110,15 @@ pub fn view(player_status: PlayerStatus, submit_name_msg: fn(String) -> a) {
         attribute.required(True),
         attribute.autocomplete("username"),
       ]),
+      color_picker.view(
+        "preferred-color",
+        "Preferred color",
+        Some(preferred_color),
+        player.all_colors,
+        [],
+        False,
+        on_color,
+      ),
       html.button([attribute.type_("submit")], [html.text("Continue")]),
     ])
 

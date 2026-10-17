@@ -27,8 +27,8 @@ mise run dev
 
 ## Try the lobby
 
-Choose a name and create a two-player (black/white) or multiplayer (up to eight
-colors) game. Pick a 9×9, 13×13 or 19×19 board and a 1–60 second cooldown. Share
+Choose a name and preferred color, then create a two-player (black/white) or
+multiplayer (up to eight colors) game. Pick a 9×9, 13×13 or 19×19 board and a 1–60 second cooldown. Share
 its `/play/...` URL so other browser profiles or private windows can join. The
 host can start once at least two players have joined. Click or tap an empty
 intersection to play; keyboard users can focus a point and press Enter or Space.
@@ -36,6 +36,18 @@ Everyone starts ready and can move independently (there are no alternating turns
 The server serializes moves, applies captures and positional superko, and enforces
 each player's cooldown. Rejected moves do not consume a cooldown. Boards refresh
 every 250ms; spectators can watch but cannot move.
+
+Choose colors from the always-visible stones on a board background; a ring marks
+your selection. Change your saved **Preferred color** in the main lobby. Creating or joining a
+room uses it if that color is free and supported by the game type; otherwise a
+random available color is assigned. Two-player games always use black and white.
+Changing your preference doesn't recolor existing games.
+
+In a waiting room, each member can change **Your color** to any currently unused
+color for that game. Everyone sees the assigned colors; taken colors are disabled,
+and the server resolves simultaneous claims atomically. Choosing a room color
+doesn't change your saved preference. Colors are locked once the host starts.
+Account preferences, like rooms, are currently held in server memory.
 
 During cooldown, click an empty point to queue one **premove**, shown as a faint
 normal-sized stone. Clicking elsewhere replaces it until it is sent;

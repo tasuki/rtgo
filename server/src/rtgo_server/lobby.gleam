@@ -52,17 +52,31 @@ pub type Error {
   CannotKickHost
   InvalidPlayerCooldown
   Kicked
+  ColorTaken
+  InvalidColor
 }
 
 pub type Message {
   CreateGame(
     host: String,
     settings: shared_game.Settings,
+    preferred_color: player.Color,
     reply: Subject(Result(String, Error)),
   )
   ListGames(reply: Subject(Dict(String, Metadata)))
   GetGame(id: String, reply: Subject(Result(Entry, Error)))
-  JoinGame(id: String, name: String, reply: Subject(Result(Bool, Error)))
+  JoinGame(
+    id: String,
+    name: String,
+    preferred_color: player.Color,
+    reply: Subject(Result(Bool, Error)),
+  )
+  SetColor(
+    id: String,
+    name: String,
+    color: player.Color,
+    reply: Subject(Result(Nil, Error)),
+  )
   StartGame(id: String, name: String, reply: Subject(Result(Bool, Error)))
   LeaveGame(id: String, name: String, reply: Subject(Result(Nil, Error)))
   CancelGame(id: String, name: String, reply: Subject(Result(Nil, Error)))
@@ -92,6 +106,7 @@ fn generate_new_id(state: State) -> String {
 fn next_color(
   players: Dict(String, player.Player),
   settings: shared_game.Settings,
+  preferred: player.Color,
 ) -> Result(player.Color, Nil) {
   let used_colors =
     players
@@ -103,6 +118,15 @@ fn next_color(
       !list.contains(used_colors, color)
     })
 
+  case list.contains(available_colors, preferred) {
+    True -> Ok(preferred)
+    False -> random_color(available_colors)
+  }
+}
+
+fn random_color(
+  available_colors: List(player.Color),
+) -> Result(player.Color, Nil) {
   case list.length(available_colors) {
     0 -> Error(Nil)
     length -> {
@@ -142,11 +166,12 @@ fn add_player(
   players: Dict(String, player.Player),
   name: String,
   settings: shared_game.Settings,
+  preferred: player.Color,
 ) -> Result(Dict(String, player.Player), Nil) {
   case dict.has_key(players, name) {
     True -> Error(Nil)
     False -> {
-      case next_color(players, settings) {
+      case next_color(players, settings, preferred) {
         Ok(color) -> Ok(dict.insert(players, name, player.Player(name, color)))
         Error(_) -> Error(Nil)
       }
@@ -158,6 +183,7 @@ fn handle_create_game(
   state: State,
   host: String,
   settings: shared_game.Settings,
+  preferred: player.Color,
   reply: Subject(Result(String, Error)),
 ) -> actor.Next(State, Message) {
   case shared_game.valid_settings(settings) {
@@ -167,7 +193,7 @@ fn handle_create_game(
     }
     True -> {
       let new_id = generate_new_id(state)
-      let assert Ok(players) = add_player(dict.new(), host, settings)
+      let assert Ok(players) = add_player(dict.new(), host, settings, preferred)
       let new_games =
         dict.insert(
           state.games,
@@ -191,6 +217,7 @@ fn handle_join_game(
   state: State,
   id: String,
   name: String,
+  preferred: player.Color,
   reply: Subject(Result(Bool, Error)),
 ) -> actor.Next(State, Message) {
   case dict.get(state.games, id) {
@@ -206,7 +233,7 @@ fn handle_join_game(
           actor.continue(state)
         }
         _, False -> {
-          case add_player(players, name, settings) {
+          case add_player(players, name, settings, preferred) {
             Ok(new_players) -> {
               let new_games =
                 dict.insert(
@@ -386,6 +413,48 @@ fn set_cooldown(
   }
 }
 
+fn set_color(
+  state: State,
+  id: String,
+  name: String,
+  color: player.Color,
+) -> Result(State, Error) {
+  use entry <- result.try(
+    dict.get(state.games, id) |> result.replace_error(GameNotFound),
+  )
+  case entry {
+    Running(..) -> Error(AlreadyStarted)
+    Open(room) -> {
+      use p <- result.try(
+        dict.get(room.players, name) |> result.replace_error(PlayerNotFound),
+      )
+      case list.contains(shared_game.colors(room.settings), color) {
+        False -> Error(InvalidColor)
+        True ->
+          case
+            list.any(dict.values(room.players), fn(other) {
+              other.username != name && other.color == color
+            })
+          {
+            True -> Error(ColorTaken)
+            False -> {
+              let updated =
+                Lobby(
+                  ..room,
+                  players: dict.insert(
+                    room.players,
+                    name,
+                    player.Player(..p, color: color),
+                  ),
+                )
+              Ok(State(dict.insert(state.games, id, Open(updated))))
+            }
+          }
+      }
+    }
+  }
+}
+
 fn finish_change(
   state: State,
   reply: Subject(Result(Nil, Error)),
@@ -405,8 +474,8 @@ fn finish_change(
 
 fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
   case msg {
-    CreateGame(host, settings, reply) ->
-      handle_create_game(state, host, settings, reply)
+    CreateGame(host, settings, preferred, reply) ->
+      handle_create_game(state, host, settings, preferred, reply)
     GetGame(id, reply) -> {
       process.send(
         reply,
@@ -418,7 +487,10 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       process.send(reply, list_metadata(state.games))
       actor.continue(state)
     }
-    JoinGame(id, name, reply) -> handle_join_game(state, id, name, reply)
+    JoinGame(id, name, preferred, reply) ->
+      handle_join_game(state, id, name, preferred, reply)
+    SetColor(id, name, color, reply) ->
+      finish_change(state, reply, set_color(state, id, name, color))
     StartGame(id, name, reply) -> handle_start_game(state, id, name, reply)
     LeaveGame(id, name, reply) ->
       finish_change(state, reply, leave(state, id, name))
@@ -448,7 +520,18 @@ pub fn create_game(
   host: String,
   settings: shared_game.Settings,
 ) -> Result(String, Error) {
-  process.call(subject, 100, fn(client) { CreateGame(host, settings, client) })
+  create_game_with_preference(subject, host, settings, player.Black)
+}
+
+pub fn create_game_with_preference(
+  subject: Subject(Message),
+  host: String,
+  settings: shared_game.Settings,
+  preferred: player.Color,
+) -> Result(String, Error) {
+  process.call(subject, 100, fn(client) {
+    CreateGame(host, settings, preferred, client)
+  })
 }
 
 pub fn get_game(subject: Subject(Message), id: String) -> Result(Entry, Error) {
@@ -464,7 +547,27 @@ pub fn join_game(
   id: String,
   name: String,
 ) -> Result(Bool, Error) {
-  process.call(subject, 100, fn(client) { JoinGame(id, name, client) })
+  join_game_with_preference(subject, id, name, player.Black)
+}
+
+pub fn join_game_with_preference(
+  subject: Subject(Message),
+  id: String,
+  name: String,
+  preferred: player.Color,
+) -> Result(Bool, Error) {
+  process.call(subject, 100, fn(client) {
+    JoinGame(id, name, preferred, client)
+  })
+}
+
+pub fn choose_color(
+  subject: Subject(Message),
+  id: String,
+  name: String,
+  color: player.Color,
+) -> Result(Nil, Error) {
+  process.call(subject, 100, fn(reply) { SetColor(id, name, color, reply) })
 }
 
 pub fn start_game(

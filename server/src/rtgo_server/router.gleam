@@ -28,6 +28,7 @@ fn game_details(id: String, entry: lobby.Entry) -> lobby_api.GameDetails {
         player_count: dict.size(players),
         settings: settings,
         cooldowns: lobby.player_cooldowns(room),
+        colors: dict.map_values(players, fn(_, p) { p.color }),
       )
     }
     lobby.Running(host:, subject:, settings:) -> {
@@ -42,6 +43,7 @@ fn game_details(id: String, entry: lobby.Entry) -> lobby_api.GameDetails {
         player_count: dict.size(players),
         settings: settings,
         cooldowns: cooldowns,
+        colors: dict.map_values(players, fn(_, p) { p.color }),
       )
     }
   }
@@ -65,7 +67,13 @@ pub fn handle(
 
     Post, _ if path_segments == register_segments -> {
       router_utils.on_json(req, auth.registration_request_decoder, fn(rr) {
-        case players.try_register(players_actor, rr.username) {
+        case
+          players.try_register_with_color(
+            players_actor,
+            rr.username,
+            rr.preferred_color,
+          )
+        {
           Ok(lir) -> json_response_obj(200, auth.log_in_response_to_json(lir))
           Error(err) ->
             json_response_obj(
@@ -86,6 +94,23 @@ pub fn handle(
       })
     }
 
+    Get, ["profile", "color"] -> {
+      use username <- router_utils.require_player(req, players_actor)
+      json_response_obj(
+        200,
+        auth_api.preferred_color_to_json(players.preferred_color(
+          players_actor,
+          username,
+        )),
+      )
+    }
+    Post, ["profile", "color"] -> {
+      use username <- router_utils.require_player(req, players_actor)
+      use color <- router_utils.on_json(req, auth_api.preferred_color_decoder)
+      players.set_preferred_color(players_actor, username, color)
+      json_response_obj(200, auth_api.preferred_color_to_json(color))
+    }
+
     Get, _ if path_segments == games_segments -> {
       let games =
         lobby.list_games(lobby_actor)
@@ -103,7 +128,14 @@ pub fn handle(
     Post, _ if path_segments == games_segments -> {
       use username <- router_utils.require_player(req, players_actor)
       use settings <- router_utils.on_json(req, shared_game.settings_decoder)
-      case lobby.create_game(lobby_actor, username, settings) {
+      case
+        lobby.create_game_with_preference(
+          lobby_actor,
+          username,
+          settings,
+          players.preferred_color(players_actor, username),
+        )
+      {
         Ok(id) ->
           json_response_obj(
             200,
@@ -172,7 +204,14 @@ pub fn handle(
 
     Post, ["games", id, "join"] -> {
       use username <- router_utils.require_player(req, players_actor)
-      case lobby.join_game(lobby_actor, id, username) {
+      case
+        lobby.join_game_with_preference(
+          lobby_actor,
+          id,
+          username,
+          players.preferred_color(players_actor, username),
+        )
+      {
         Ok(joined) ->
           json_response_obj(
             200,
@@ -223,6 +262,12 @@ pub fn handle(
         lobby_api.kick_player_request_decoder,
       )
       change_response(lobby.kick_player(lobby_actor, id, username, target))
+    }
+
+    Post, ["games", id, "color"] -> {
+      use username <- router_utils.require_player(req, players_actor)
+      use color <- router_utils.on_json(req, lobby_api.choose_color_decoder)
+      change_response(lobby.choose_color(lobby_actor, id, username, color))
     }
 
     Post, ["games", id, "cooldown"] -> {
@@ -297,6 +342,14 @@ fn change_response(result: Result(Nil, lobby.Error)) -> Response {
             "Player cooldown must be at least the game's base cooldown and at most 3600 seconds",
           ),
         ),
+      ])
+    Error(lobby.ColorTaken) ->
+      json_response(409, [
+        #("msg", json.string("That color is already taken. Choose another.")),
+      ])
+    Error(lobby.InvalidColor) ->
+      json_response(400, [
+        #("msg", json.string("That color is not available for this game type")),
       ])
     Error(lobby.Kicked) ->
       json_response(403, [

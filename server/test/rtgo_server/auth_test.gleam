@@ -10,6 +10,7 @@ import rtgo_server/test_support.{
 }
 import rtgo_shared/auth
 import rtgo_shared/auth_api
+import rtgo_shared/player
 import wisp
 import wisp/simulate
 import ywt
@@ -91,7 +92,10 @@ pub fn invalid_login_returns_bad_request_test() {
 fn register_request(username: String) {
   simulate.request(Post, auth_api.register_path)
   |> simulate.json_body(
-    auth.registration_request_to_json(auth.RegistrationRequest(username)),
+    auth.registration_request_to_json(auth.RegistrationRequest(
+      username,
+      player.Black,
+    )),
   )
 }
 

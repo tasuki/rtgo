@@ -1,22 +1,29 @@
 import gleam/dynamic/decode
 import gleam/json
+import rtgo_shared/player
 
 pub type RegistrationRequest {
-  RegistrationRequest(username: String)
+  RegistrationRequest(username: String, preferred_color: player.Color)
 }
 
 pub fn registration_request_to_json(
   registration_request: RegistrationRequest,
 ) -> json.Json {
-  let RegistrationRequest(username:) = registration_request
+  let RegistrationRequest(username:, preferred_color:) = registration_request
   json.object([
     #("username", json.string(username)),
+    #("preferred_color", player.color_to_json(preferred_color)),
   ])
 }
 
 pub fn registration_request_decoder() -> decode.Decoder(RegistrationRequest) {
   use username <- decode.field("username", decode.string)
-  decode.success(RegistrationRequest(username:))
+  use preferred_color <- decode.optional_field(
+    "preferred_color",
+    player.Black,
+    player.color_decoder(),
+  )
+  decode.success(RegistrationRequest(username:, preferred_color:))
 }
 
 pub type RegistrationFailedResponse {

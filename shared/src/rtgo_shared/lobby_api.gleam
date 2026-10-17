@@ -5,6 +5,7 @@ import gleam/http/request
 import gleam/json
 import gleam/uri
 import rtgo_shared/game
+import rtgo_shared/player
 
 pub const games_path = "/games"
 
@@ -26,6 +27,7 @@ pub type GameDetails {
     player_count: Int,
     settings: game.Settings,
     cooldowns: Dict(String, Int),
+    colors: Dict(String, player.Color),
   )
 }
 
@@ -121,6 +123,24 @@ pub fn kick_player_request_decoder() -> decode.Decoder(String) {
   decode.success(player)
 }
 
+pub fn choose_color_request(
+  server_url: String,
+  id: String,
+  jwt: String,
+  color: player.Color,
+) -> request.Request(String) {
+  authenticated_json_request(
+    server_url <> games_path <> "/" <> id <> "/color",
+    jwt,
+    json.object([#("color", player.color_to_json(color))]),
+  )
+}
+
+pub fn choose_color_decoder() -> decode.Decoder(player.Color) {
+  use color <- decode.field("color", player.color_decoder())
+  decode.success(color)
+}
+
 pub fn player_cooldown_request(
   server_url: String,
   id: String,
@@ -208,6 +228,7 @@ pub fn game_details_to_json(details: GameDetails) -> json.Json {
     player_count:,
     settings:,
     cooldowns:,
+    colors:,
   ) = details
   json.object([
     #("id", json.string(id)),
@@ -215,6 +236,7 @@ pub fn game_details_to_json(details: GameDetails) -> json.Json {
     #("host", json.string(host)),
     #("players", json.array(players, json.string)),
     #("cooldowns", json.dict(cooldowns, fn(name) { name }, json.int)),
+    #("colors", json.dict(colors, fn(name) { name }, player.color_to_json)),
     #("player_count", json.int(player_count)),
     #("settings", game.settings_to_json(settings)),
   ])
@@ -229,6 +251,10 @@ pub fn game_details_decoder() -> decode.Decoder(GameDetails) {
     "cooldowns",
     decode.dict(decode.string, decode.int),
   )
+  use colors <- decode.field(
+    "colors",
+    decode.dict(decode.string, player.color_decoder()),
+  )
   use player_count <- decode.field("player_count", decode.int)
   use settings <- decode.field("settings", game.settings_decoder())
   decode.success(GameDetails(
@@ -239,6 +265,7 @@ pub fn game_details_decoder() -> decode.Decoder(GameDetails) {
     player_count:,
     settings:,
     cooldowns:,
+    colors:,
   ))
 }
 
