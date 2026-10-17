@@ -171,7 +171,7 @@ pub fn polling_does_not_overlap_or_roll_back_successful_moves_test() {
   should.equal(step(navigated, app.BoardRefresh(model.page_version)), navigated)
 }
 
-pub fn cooldown_spectators_and_finished_games_cannot_move_test() {
+pub fn cooldown_allows_premoves_but_spectators_and_finished_games_cannot_move_test() {
   let model = loaded()
   let cooling =
     play_api.State(
@@ -187,7 +187,10 @@ pub fn cooldown_spectators_and_finished_games_cannot_move_test() {
       end_in_ms: 15_000,
     )
   let waiting = step(model, app.BoardLoaded(model.page_version, Ok(cooling)))
-  should.equal(step(waiting, app.PlayPoint(#(0, 0))), waiting)
+  let queued = step(waiting, app.PlayPoint(#(0, 0)))
+  should.equal(queued.premove, Some(#(0, 0)))
+  should.equal(queued.pending_action, False)
+  should.equal(queued.game, waiting.game)
   let html = waiting |> app.view |> element.to_string
   should.equal(string.contains(html, "Ready in 5s"), True)
   should.equal(string.contains(html, "Passing (can still play)"), True)

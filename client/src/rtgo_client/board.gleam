@@ -18,8 +18,10 @@ pub fn view(
   game: go.Game,
   active_player: Option(player.Player),
   hovered: Option(go.Point),
+  premove: Option(go.Point),
   on_hover: fn(Option(go.Point)) -> msg,
   on_play: fn(go.Point) -> msg,
+  on_cancel: msg,
 ) {
   let board_size = game.board_size
   let view_box =
@@ -34,6 +36,14 @@ pub fn view(
       attribute.attribute("viewBox", view_box),
       attribute.attribute("aria-label", "Go board"),
       event.on_mouse_leave(on_hover(None)),
+      event.advanced("keydown", {
+        use key <- decode.field("key", decode.string)
+        let handler = event.handler(on_cancel, True, False)
+        case key {
+          "Escape" -> decode.success(handler)
+          _ -> decode.failure(handler, "Escape")
+        }
+      }),
     ],
     [
       svg.g([], view_lines(1, board_size)),
@@ -43,8 +53,16 @@ pub fn view(
         dict.to_list(game.stones)
           |> list.map(fn(entry) { stone(entry.0, entry.1, "stone") }),
       ),
-      case active_player, hovered {
+      case active_player, premove {
         Some(p), Some(point) ->
+          case dict.has_key(game.stones, point) {
+            False -> stone(point, p, "premove-stone")
+            True -> svg.g([], [])
+          }
+        _, _ -> svg.g([], [])
+      },
+      case active_player, hovered {
+        Some(p), Some(point) if hovered != premove ->
           case dict.has_key(game.stones, point) {
             False -> stone(point, p, "ghost-stone")
             True -> svg.g([], [])
@@ -61,6 +79,10 @@ pub fn view(
             True -> [
               attribute.attribute("role", "button"),
               attribute.attribute("tabindex", "0"),
+              attribute.attribute("aria-pressed", case premove == Some(point) {
+                True -> "true"
+                False -> "false"
+              }),
               event.on_click(on_play(point)),
               event.on_focus(on_hover(Some(point))),
               event.on_blur(on_hover(None)),

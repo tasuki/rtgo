@@ -65,9 +65,11 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow
 #board { flex: none; width: var(--board-size); height: var(--board-size); background: #CB5; }
 #board svg { display: block; width: 100%; height: 100%; }
 .ghost-stone { opacity: 0.4; pointer-events: none; }
-.board-point { fill: transparent; }
+.premove-stone { opacity: 0.65; pointer-events: none; }
+/* SVG scales the browser's default focus outline into a huge ring. */
+.board-point { fill: transparent; outline: none; }
 .board-point.playable { cursor: pointer; touch-action: manipulation; }
-.board-point:focus-visible { outline: none; stroke: #06C; stroke-width: 0.06; }
+.board-point:focus-visible { stroke: #06C; stroke-width: 0.06; }
 .play-status h2 { margin: 8px 0; }
 .live-players { list-style: none; padding: 0; display: grid; gap: 8px; }
 .live-players li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }

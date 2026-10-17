@@ -67,6 +67,7 @@ pub type Model {
     live: Option(play_api.State),
     loading_board: Bool,
     hovered: Option(go.Point),
+    premove: Option(go.Point),
     expanded_menu: Option(String),
   )
 }
@@ -102,6 +103,7 @@ pub fn initial_model(
     live: None,
     loading_board: False,
     hovered: None,
+    premove: None,
     expanded_menu: None,
   )
 }
@@ -225,6 +227,7 @@ pub type Msg {
   PointHovered(Option(go.Point))
   ToggleMenu(String)
   PlayPoint(go.Point)
+  CancelPremove
   MoveResponded(Int, Result(play_api.State, rsvp.Error))
 }
 
@@ -328,6 +331,7 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           live: None,
           loading_board: False,
           hovered: None,
+          premove: None,
           expanded_menu: None,
           cooldown_drafts: dict.new(),
           loading_game: False,
@@ -498,19 +502,21 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       }
     BoardLoaded(_, response) -> {
       let model = Model(..model, loading_board: False)
-      let model = case response {
-        Ok(state) -> accept_board(model, state)
-        Error(_) ->
+      let #(model, premove_effect) = case response {
+        Ok(state) -> accept_board(model, state) |> send_premove_if_ready
+        Error(_) -> #(
           Model(
             ..model,
             load_error: Some("Live updates disconnected. Retrying..."),
-          )
+          ),
+          effect.none(),
+        )
       }
       let poll = case model.live {
         Some(state) if state.finished -> effect.none()
         _ -> wait(250, BoardRefresh(model.page_version))
       }
-      #(model, poll)
+      #(model, effect.batch([poll, premove_effect]))
     }
     PointHovered(point) -> #(Model(..model, hovered: point), effect.none())
     ToggleMenu(key) -> #(
@@ -521,28 +527,28 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       effect.none(),
     )
     PlayPoint(point) ->
-      case model.route, credentials(model), playable_player(model) {
-        Play(id), Ok(#(_, jwt)), Some(_) ->
-          case dict.has_key(model.game.stones, point) {
-            True -> #(model, effect.none())
-            False -> #(
-              Model(
-                ..model,
-                pending_action: True,
-                action_error: None,
-                hovered: None,
-                expanded_menu: None,
-              ),
-              rsvp.send(
-                play_api.move_request(model.server_url, id, jwt, point),
-                rsvp.expect_json(play_api.state_decoder(), fn(res) {
-                  MoveResponded(model.page_version, res)
-                }),
-              ),
-            )
-          }
+      case
+        local_status(model),
+        model.pending_action,
+        empty_point(model.game, point)
+      {
+        Some(status), False, True if status.cooldown_ms > 0 -> #(
+          Model(
+            ..model,
+            premove: case model.premove == Some(point) {
+              True -> None
+              False -> Some(point)
+            },
+            hovered: None,
+            expanded_menu: None,
+            action_error: None,
+          ),
+          effect.none(),
+        )
+        Some(_), False, True -> send_move(model, point)
         _, _, _ -> #(model, effect.none())
       }
+    CancelPremove -> #(Model(..model, premove: None), effect.none())
     MoveResponded(_, response) ->
       case response {
         Ok(state) -> #(
@@ -821,21 +827,97 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
 fn accept_board(model: Model, state: play_api.State) -> Model {
   case model.live {
     Some(current) if current.revision > state.revision -> model
-    _ -> Model(..model, live: Some(state), game: state.board, load_error: None)
+    _ -> {
+      let model =
+        Model(..model, live: Some(state), game: state.board, load_error: None)
+      case model.premove, local_status(model) {
+        Some(_), None -> Model(..model, premove: None)
+        Some(point), Some(_) ->
+          case empty_point(model.game, point) {
+            True -> model
+            False ->
+              Model(
+                ..model,
+                premove: None,
+                action_error: Some(
+                  "Premove cancelled: that point is now occupied.",
+                ),
+              )
+          }
+        _, _ -> model
+      }
+    }
   }
 }
 
-fn playable_player(model: Model) -> Option(shared_player.Player) {
-  case credentials(model), model.live, model.pending_action {
-    Ok(#(name, _)), Some(state), False if !state.finished -> {
+fn local_status(model: Model) -> Option(play_api.PlayerStatus) {
+  case model.route, credentials(model), model.live {
+    Play(_), Ok(#(name, _)), Some(state) if !state.finished -> {
       state.players
-      |> list.find(fn(status) {
-        status.player.username == name && status.cooldown_ms == 0
-      })
-      |> result.map(fn(status) { status.player })
+      |> list.find(fn(status) { status.player.username == name })
       |> option.from_result
     }
     _, _, _ -> None
+  }
+}
+
+fn selectable_player(model: Model) -> Option(shared_player.Player) {
+  case model.pending_action {
+    True -> None
+    False -> local_status(model) |> option.map(fn(status) { status.player })
+  }
+}
+
+fn empty_point(game: go.Game, point: go.Point) -> Bool {
+  point.0 >= 0
+  && point.0 < game.board_size
+  && point.1 >= 0
+  && point.1 < game.board_size
+  && !dict.has_key(game.stones, point)
+}
+
+fn send_move(model: Model, point: go.Point) -> #(Model, Effect(Msg)) {
+  case model.route, credentials(model) {
+    Play(id), Ok(#(_, jwt)) -> #(
+      Model(
+        ..model,
+        pending_action: True,
+        premove: None,
+        action_error: None,
+        hovered: None,
+        expanded_menu: None,
+      ),
+      rsvp.send(
+        play_api.move_request(model.server_url, id, jwt, point),
+        rsvp.expect_json(play_api.state_decoder(), fn(res) {
+          MoveResponded(model.page_version, res)
+        }),
+      ),
+    )
+    _, _ -> #(model, effect.none())
+  }
+}
+
+fn send_premove_if_ready(model: Model) -> #(Model, Effect(Msg)) {
+  case model.premove, local_status(model), model.pending_action {
+    Some(point), Some(status), False if status.cooldown_ms == 0 -> {
+      // Validate against the latest board. Only the server has complete superko
+      // history, so it still has the final say. Never retry a sent premove.
+      case go.play(model.game, status.player, point) {
+        Ok(_) -> send_move(model, point)
+        Error(_) -> #(
+          Model(
+            ..model,
+            premove: None,
+            action_error: Some(
+              "Premove cancelled: that move is no longer legal.",
+            ),
+          ),
+          effect.none(),
+        )
+      }
+    }
+    _, _, _ -> #(model, effect.none())
   }
 }
 
@@ -1244,10 +1326,12 @@ fn view_play(model: Model) -> Element(Msg) {
               html.div([attribute.id("board")], [
                 board.view(
                   model.game,
-                  playable_player(model),
+                  selectable_player(model),
                   model.hovered,
+                  model.premove,
                   PointHovered,
                   PlayPoint,
+                  CancelPremove,
                 ),
               ]),
             ]),
@@ -1362,7 +1446,7 @@ fn view_live_status(model: Model) -> Element(Msg) {
           False ->
             html.small([], [
               html.text(
-                "Click or tap to play. The thin bars on both edges of the board show your cooldown and disappear when you can play. Capture dead stones before everyone stops.",
+                "Click or tap to play, or queue a premove during cooldown. Click elsewhere to replace it; click it again or press Escape to cancel. The bars disappear when you can play. Capture dead stones before everyone stops.",
               ),
             ])
         },

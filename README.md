@@ -37,6 +37,14 @@ The server serializes moves, applies captures and positional superko, and enforc
 each player's cooldown. Rejected moves do not consume a cooldown. Boards refresh
 every 250ms; spectators can watch but cannot move.
 
+During cooldown, click an empty point to queue one **premove**, shown as a faint
+normal-sized stone. Clicking elsewhere replaces it until it is sent;
+clicking the selected point again or pressing Escape cancels it. The latest
+queued point is sent once a live update confirms you are ready. An occupied point
+cancels the queue, and legality is checked again before sending. Server rejection
+(including superko) or a network failure does not retry the move automatically.
+Queued moves are local to this page and clear on navigation or game end.
+
 The board fills the largest possible viewport square. Navigation, player status,
 game details and scores live in the circles along the left (landscape) or top
 (portrait); hover for details, or click/tap/keyboard-activate a circle to pin its
