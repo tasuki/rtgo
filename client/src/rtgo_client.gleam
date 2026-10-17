@@ -26,6 +26,8 @@ import rtgo_shared/auth
 import rtgo_shared/game as shared_game
 import rtgo_shared/go
 import rtgo_shared/lobby_api
+import rtgo_shared/play_api
+import rtgo_shared/player as shared_player
 
 pub fn main() {
   let app = lustre.application(init, update, view)
@@ -62,6 +64,10 @@ pub type Model {
     create_game_type: shared_game.GameType,
     create_cooldown: String,
     cooldown_drafts: Dict(String, String),
+    live: Option(play_api.State),
+    loading_board: Bool,
+    hovered: Option(go.Point),
+    expanded_menu: Option(String),
   )
 }
 
@@ -93,6 +99,10 @@ pub fn initial_model(
     create_game_type: shared_game.default_settings.game_type,
     create_cooldown: int.to_string(default_cooldown),
     cooldown_drafts: dict.new(),
+    live: None,
+    loading_board: False,
+    hovered: None,
+    expanded_menu: None,
   )
 }
 
@@ -210,6 +220,12 @@ pub type Msg {
   GameStarted(Int, String, Result(lobby_api.StartGameResponse, rsvp.Error))
   OpenGame(String)
   BackToLobby
+  BoardRefresh(Int)
+  BoardLoaded(Int, Result(play_api.State, rsvp.Error))
+  PointHovered(Option(go.Point))
+  ToggleMenu(String)
+  PlayPoint(go.Point)
+  MoveResponded(Int, Result(play_api.State, rsvp.Error))
 }
 
 pub fn wait(milliseconds: Int, msg: msg) -> Effect(msg) {
@@ -278,7 +294,10 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     | GameLeft(version, _)
     | GameCancelled(version, _)
     | PlayerKicked(version, _, _)
-    | PlayerCooldownSet(version, _, _, _) -> version != model.page_version
+    | PlayerCooldownSet(version, _, _, _)
+    | BoardRefresh(version)
+    | BoardLoaded(version, _)
+    | MoveResponded(version, _) -> version != model.page_version
     _ -> False
   }
   let follows_save = case msg {
@@ -306,6 +325,10 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           route: route,
           page_version: model.page_version + 1,
           current_game: None,
+          live: None,
+          loading_board: False,
+          hovered: None,
+          expanded_menu: None,
           cooldown_drafts: dict.new(),
           loading_game: False,
           loading_lobby: False,
@@ -453,8 +476,81 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         Error(rsvp.HttpError(res)) if res.status == 404 -> effect.none()
         Error(_) -> refresh_later(model)
       }
+      case result {
+        Ok(lobby_api.GetGameResponse(details))
+          if details.phase != shared_game.Negotiating
+        -> update(model, BoardRefresh(model.page_version))
+        _ -> #(model, poll)
+      }
+    }
+    BoardRefresh(_) ->
+      case model.route, model.loading_board {
+        Play(id), False -> #(
+          Model(..model, loading_board: True),
+          rsvp.send(
+            play_api.state_request(model.server_url, id),
+            rsvp.expect_json(play_api.state_decoder(), fn(res) {
+              BoardLoaded(model.page_version, res)
+            }),
+          ),
+        )
+        _, _ -> #(model, effect.none())
+      }
+    BoardLoaded(_, response) -> {
+      let model = Model(..model, loading_board: False)
+      let model = case response {
+        Ok(state) -> accept_board(model, state)
+        Error(_) ->
+          Model(
+            ..model,
+            load_error: Some("Live updates disconnected. Retrying..."),
+          )
+      }
+      let poll = case model.live {
+        Some(state) if state.finished -> effect.none()
+        _ -> wait(250, BoardRefresh(model.page_version))
+      }
       #(model, poll)
     }
+    PointHovered(point) -> #(Model(..model, hovered: point), effect.none())
+    ToggleMenu(key) -> #(
+      Model(..model, expanded_menu: case model.expanded_menu == Some(key) {
+        True -> None
+        False -> Some(key)
+      }),
+      effect.none(),
+    )
+    PlayPoint(point) ->
+      case model.route, credentials(model), playable_player(model) {
+        Play(id), Ok(#(_, jwt)), Some(_) ->
+          case dict.has_key(model.game.stones, point) {
+            True -> #(model, effect.none())
+            False -> #(
+              Model(
+                ..model,
+                pending_action: True,
+                action_error: None,
+                hovered: None,
+                expanded_menu: None,
+              ),
+              rsvp.send(
+                play_api.move_request(model.server_url, id, jwt, point),
+                rsvp.expect_json(play_api.state_decoder(), fn(res) {
+                  MoveResponded(model.page_version, res)
+                }),
+              ),
+            )
+          }
+        _, _, _ -> #(model, effect.none())
+      }
+    MoveResponded(_, response) ->
+      case response {
+        Ok(state) -> #(
+          accept_board(Model(..model, pending_action: False), state),
+          effect.none(),
+        )
+        Error(error) -> action_failed(model, action_error(error))
+      }
     BoardSizeChanged(value) -> {
       let size = int.parse(value) |> result.unwrap(model.create_board_size)
       #(Model(..model, create_board_size: size), effect.none())
@@ -719,6 +815,27 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       model,
       modem.push(route_to_str(CreateJoinGame), None, None),
     )
+  }
+}
+
+fn accept_board(model: Model, state: play_api.State) -> Model {
+  case model.live {
+    Some(current) if current.revision > state.revision -> model
+    _ -> Model(..model, live: Some(state), game: state.board, load_error: None)
+  }
+}
+
+fn playable_player(model: Model) -> Option(shared_player.Player) {
+  case credentials(model), model.live, model.pending_action {
+    Ok(#(name, _)), Some(state), False if !state.finished -> {
+      state.players
+      |> list.find(fn(status) {
+        status.player.username == name && status.cooldown_ms == 0
+      })
+      |> result.map(fn(status) { status.player })
+      |> option.from_result
+    }
+    _, _, _ -> None
   }
 }
 
@@ -1122,12 +1239,19 @@ fn view_play(model: Model) -> Element(Msg) {
       case details.phase {
         shared_game.Negotiating -> view_game_room(model, details)
         _ ->
-          html.div([attribute.id("board-container")], [
-            html.button(
-              [attribute.class("back-to-lobby"), event.on_click(BackToLobby)],
-              [html.text("Back to lobby")],
-            ),
-            html.div([attribute.id("board")], [board.view(model.game)]),
+          html.div([attribute.id("play-page")], [
+            html.div([attribute.id("board-container")], [
+              html.div([attribute.id("board")], [
+                board.view(
+                  model.game,
+                  playable_player(model),
+                  model.hovered,
+                  PointHovered,
+                  PlayPoint,
+                ),
+              ]),
+            ]),
+            view_countdown_bars(model),
           ])
       }
     None ->
@@ -1142,13 +1266,390 @@ fn view_play(model: Model) -> Element(Msg) {
   }
 }
 
-pub fn view(model: Model) -> Element(Msg) {
+fn seconds_text(milliseconds: Int) -> String {
+  int.to_string({ milliseconds + 999 } / 1000) <> "s"
+}
+
+fn result_text(state: play_api.State) -> String {
+  let best =
+    list.fold(state.players, 0, fn(best, status) {
+      int.max(
+        best,
+        dict.get(state.scores, status.player.username) |> result.unwrap(0),
+      )
+    })
+  let winners =
+    state.players
+    |> list.filter(fn(status) {
+      dict.get(state.scores, status.player.username) |> result.unwrap(0) == best
+    })
+    |> list.map(fn(status) { status.player.username })
+  case winners {
+    [name] -> name <> " wins with " <> int.to_string(best) <> " points."
+    _ ->
+      "Tie: "
+      <> string.join(winners, ", ")
+      <> " · "
+      <> int.to_string(best)
+      <> " points."
+  }
+}
+
+fn view_live_status(model: Model) -> Element(Msg) {
+  case model.live {
+    None ->
+      html.p([attribute.class("play-status")], [html.text("Loading board...")])
+    Some(state) ->
+      html.div([attribute.class("play-status")], [
+        html.h2([], [
+          html.text(case state.finished {
+            True -> "Game over"
+            False -> "Playing"
+          }),
+        ]),
+        case state.finished {
+          True ->
+            html.p(
+              [
+                attribute.class("game-result"),
+                attribute.attribute("role", "status"),
+              ],
+              [html.text(result_text(state))],
+            )
+          False -> html.text("")
+        },
+        html.p([], [
+          html.text(case state.finished {
+            True ->
+              "Area score: stones + surrounded space. No komi; shared borders are neutral."
+            False ->
+              "Everyone passing ends the game in "
+              <> seconds_text(state.end_in_ms)
+              <> " unless someone moves."
+          }),
+        ]),
+        html.ul(
+          [attribute.class("live-players")],
+          list.map(state.players, fn(status) {
+            let p = status.player
+            let text = player_status_text(state, status)
+            html.li([], [
+              html.span(
+                [
+                  attribute.class("player-color"),
+                  attribute.style(
+                    "background-color",
+                    shared_player.color_to_str(p.color),
+                  ),
+                ],
+                [],
+              ),
+              html.strong([], [html.text(p.username)]),
+              html.span([], [html.text(text)]),
+            ])
+          }),
+        ),
+        case credentials(model) {
+          Ok(#(name, _)) ->
+            case list.any(state.players, fn(s) { s.player.username == name }) {
+              True -> html.text("")
+              False -> html.p([], [html.text("You are spectating.")])
+            }
+          _ -> html.text("")
+        },
+        case state.finished {
+          True -> html.text("")
+          False ->
+            html.small([], [
+              html.text(
+                "Click or tap to play. The thin bars on both edges of the board show your cooldown and disappear when you can play. Capture dead stones before everyone stops.",
+              ),
+            ])
+        },
+      ])
+  }
+}
+
+fn player_status_text(
+  state: play_api.State,
+  status: play_api.PlayerStatus,
+) -> String {
+  case state.finished {
+    True ->
+      int.to_string(
+        dict.get(state.scores, status.player.username) |> result.unwrap(0),
+      )
+      <> " points"
+    False if status.cooldown_ms > 0 ->
+      "Ready in " <> seconds_text(status.cooldown_ms)
+    False if status.pass_in_ms == 0 -> "Passing (can still play)"
+    False -> "Ready · passing in " <> seconds_text(status.pass_in_ms)
+  }
+}
+
+fn menu_popover(
+  model: Model,
+  key: String,
+  text: String,
+  label: String,
+  class: String,
+  styles: List(attribute.Attribute(Msg)),
+  content: List(Element(Msg)),
+) -> Element(Msg) {
+  let expanded = model.expanded_menu == Some(key)
+  let panel_id = "menu-panel-" <> key
+  html.div(
+    [
+      attribute.class(
+        "item menu-popover"
+        <> case expanded {
+          True -> " expanded"
+          False -> ""
+        },
+      ),
+    ],
+    [
+      html.button(
+        list.append(
+          [
+            attribute.class("icon " <> class),
+            attribute.type_("button"),
+            attribute.attribute("aria-label", label),
+            attribute.attribute("aria-expanded", case expanded {
+              True -> "true"
+              False -> "false"
+            }),
+            attribute.attribute("aria-controls", panel_id),
+            event.on_click(ToggleMenu(key)),
+          ],
+          styles,
+        ),
+        [html.text(text)],
+      ),
+      html.div([attribute.id(panel_id), attribute.class("menu-panel")], content),
+    ],
+  )
+}
+
+fn view_menu(model: Model) -> Element(Msg) {
   let #(ping_class, ping) = view_ping(model.ping)
+  let playing = case model.route, model.current_game, model.player {
+    Play(_), Some(details), player_info.LoggedIn(_, _)
+      if details.phase != shared_game.Negotiating
+    -> True
+    _, _, _ -> False
+  }
+  case playing {
+    False ->
+      html.div([attribute.id("menu")], [
+        view_menu_item("", "!", "menu"),
+        view_menu_item("ping " <> ping_class, ping, ""),
+      ])
+    True -> {
+      let title = case model.current_game {
+        Some(details) -> details.id
+        None -> "Game"
+      }
+      let extra = case model.live {
+        None -> []
+        Some(state) -> {
+          let end_label = case state.finished {
+            True -> result_text(state)
+            False ->
+              "Everyone passing ends the game in "
+              <> seconds_text(state.end_in_ms)
+              <> " unless someone moves."
+          }
+          let end =
+            menu_popover(
+              model,
+              "end",
+              case state.finished {
+                True -> "✓"
+                False -> int.to_string({ state.end_in_ms + 999 } / 1000)
+              },
+              end_label,
+              "timer-icon end-icon",
+              [],
+              [
+                html.strong([], [
+                  html.text(case state.finished {
+                    True -> "Game over"
+                    False -> "Automatic passing"
+                  }),
+                ]),
+                html.p([], [html.text(end_label)]),
+                html.p([], [
+                  html.text(
+                    "A player passes after 10 seconds of being ready. A move clears their pass; everyone passing ends the game.",
+                  ),
+                ]),
+              ],
+            )
+          [
+            end,
+            ..list.map(state.players, fn(status) {
+              let p = status.player
+              let own = case credentials(model) {
+                Ok(#(name, _)) -> name == p.username
+                Error(_) -> False
+              }
+              let name =
+                p.username
+                <> case own {
+                  True -> " (you)"
+                  False -> ""
+                }
+              let label = name <> ": " <> player_status_text(state, status)
+              let text = case state.finished {
+                True ->
+                  int.to_string(
+                    dict.get(state.scores, p.username) |> result.unwrap(0),
+                  )
+                False if status.cooldown_ms > 0 ->
+                  int.to_string({ status.cooldown_ms + 999 } / 1000)
+                False if status.pass_in_ms == 0 -> "P"
+                False -> int.to_string({ status.pass_in_ms + 999 } / 1000)
+              }
+              menu_popover(
+                model,
+                "player-" <> p.username,
+                text,
+                label,
+                "timer-icon player-icon"
+                  <> case own {
+                  True -> " own-player"
+                  False -> ""
+                },
+                [
+                  attribute.style(
+                    "background-color",
+                    shared_player.color_to_str(p.color),
+                  ),
+                  attribute.style("color", case p.color {
+                    shared_player.Black
+                    | shared_player.Blue
+                    | shared_player.Purple -> "#FFF"
+                    _ -> "#111"
+                  }),
+                ],
+                [
+                  html.strong([], [html.text(name)]),
+                  html.p([], [html.text(player_status_text(state, status))]),
+                ],
+              )
+            })
+          ]
+        }
+      }
+      html.div(
+        [
+          attribute.id("menu"),
+          attribute.class("playing-menu"),
+          attribute.style("--menu-count", int.to_string(3 + list.length(extra))),
+        ],
+        list.append(
+          [
+            menu_popover(
+              model,
+              "game",
+              "!",
+              "Game info: " <> title,
+              case model.load_error != None || model.action_error != None {
+                True -> "has-error"
+                False -> ""
+              },
+              [],
+              [
+                html.strong([], [html.text(title)]),
+                view_errors(model),
+                view_live_status(model),
+              ],
+            ),
+            html.div([attribute.class("item")], [
+              html.button(
+                [
+                  attribute.class("icon"),
+                  attribute.type_("button"),
+                  attribute.attribute("aria-label", "Back to lobby"),
+                  event.on_click(BackToLobby),
+                ],
+                [
+                  html.text("↩"),
+                  html.span([attribute.class("tooltip")], [
+                    html.text(" Back to lobby"),
+                  ]),
+                ],
+              ),
+            ]),
+            view_menu_item("ping " <> ping_class, ping, "Connection round trip"),
+          ],
+          extra,
+        ),
+      )
+    }
+  }
+}
+
+fn view_countdown_bars(model: Model) -> Element(Msg) {
+  case credentials(model), model.live {
+    Ok(#(name, _)), Some(state) if !state.finished -> {
+      case
+        list.find(state.players, fn(status) {
+          status.player.username == name && status.cooldown_ms > 0
+        })
+      {
+        Error(_) -> html.text("")
+        Ok(status) -> {
+          let cooldown = case model.current_game {
+            Some(details) ->
+              dict.get(details.cooldowns, name)
+              |> result.unwrap(shared_game.base_cooldown(details.settings))
+            None -> shared_game.base_cooldown(shared_game.default_settings)
+          }
+          let total = int.max(1, cooldown * 1000)
+          let remaining = int.clamp(status.cooldown_ms, min: 0, max: total)
+          let label = name <> ": " <> player_status_text(state, status)
+          html.div(
+            [
+              attribute.id("countdown-bars"),
+              attribute.style(
+                "--remaining",
+                int.to_string(remaining * 100 / total) <> "%",
+              ),
+            ],
+            [
+              html.div(
+                [
+                  attribute.class("countdown-bar countdown-first"),
+                  attribute.attribute("role", "meter"),
+                  attribute.attribute("aria-label", label),
+                  attribute.attribute("aria-valuemin", "0"),
+                  attribute.attribute("aria-valuemax", int.to_string(total)),
+                  attribute.attribute("aria-valuenow", int.to_string(remaining)),
+                  attribute.attribute("aria-valuetext", label),
+                ],
+                [html.div([attribute.class("countdown-fill")], [])],
+              ),
+              html.div(
+                [
+                  attribute.class("countdown-bar countdown-last"),
+                  attribute.attribute("aria-hidden", "true"),
+                ],
+                [html.div([attribute.class("countdown-fill")], [])],
+              ),
+            ],
+          )
+        }
+      }
+    }
+    _, _ -> html.text("")
+  }
+}
+
+pub fn view(model: Model) -> Element(Msg) {
   html.div([attribute.id("container")], [
-    html.div([attribute.id("menu")], [
-      view_menu_item("", "!", "menu"),
-      view_menu_item("ping " <> ping_class, ping, ""),
-    ]),
+    view_menu(model),
     case model.player {
       player_info.LoggedIn(name, _) ->
         case model.route {

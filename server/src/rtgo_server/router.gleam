@@ -11,7 +11,9 @@ import rtgo_server/router_utils.{allow_cors, json_response, json_response_obj}
 import rtgo_shared/auth
 import rtgo_shared/auth_api
 import rtgo_shared/game as shared_game
+import rtgo_shared/go
 import rtgo_shared/lobby_api
+import rtgo_shared/play_api
 import wisp.{type Request, type Response}
 
 fn game_details(id: String, entry: lobby.Entry) -> lobby_api.GameDetails {
@@ -29,11 +31,12 @@ fn game_details(id: String, entry: lobby.Entry) -> lobby_api.GameDetails {
       )
     }
     lobby.Running(host:, subject:, settings:) -> {
-      let game.Snapshot(players:, cooldowns:, ..) = game.get_game(subject)
+      let game.Snapshot(players:, cooldowns:, phase:, ..) =
+        game.get_game(subject)
       let names = list.sort(dict.keys(players), string.compare)
       lobby_api.GameDetails(
         id: id,
-        phase: shared_game.Started,
+        phase: phase,
         host: host,
         players: names,
         player_count: dict.size(players),
@@ -127,6 +130,46 @@ pub fn handle(
       }
     }
 
+    Get, ["games", id, "board"] -> {
+      use subject <- running_game(lobby_actor, id)
+      json_response_obj(
+        200,
+        play_api.state_to_json(game.get_game(subject).live),
+      )
+    }
+
+    Post, ["games", id, "moves"] -> {
+      use username <- router_utils.require_player(req, players_actor)
+      use subject <- running_game(lobby_actor, id)
+      use point <- router_utils.on_json(req, play_api.move_decoder)
+      case game.play(subject, username, point) {
+        Ok(Nil) ->
+          json_response_obj(
+            200,
+            play_api.state_to_json(game.get_game(subject).live),
+          )
+        Error(game.UnknownPlayer) ->
+          json_response(403, [
+            #("msg", json.string("Only players in this game can move")),
+          ])
+        Error(game.CoolingDown) ->
+          json_response(409, [
+            #("msg", json.string("Your next move is still cooling down")),
+          ])
+        Error(game.GameFinished) ->
+          json_response(409, [#("msg", json.string("The game has finished"))])
+        Error(game.InvalidMove(error)) -> {
+          let message = case error {
+            go.OutOfBounds -> "That point is outside the board"
+            go.Occupied -> "That point is occupied"
+            go.Suicide -> "That move has no liberties"
+            go.Ko -> "That move repeats a previous board (superko)"
+          }
+          json_response(409, [#("msg", json.string(message))])
+        }
+      }
+    }
+
     Post, ["games", id, "join"] -> {
       use username <- router_utils.require_player(req, players_actor)
       case lobby.join_game(lobby_actor, id, username) {
@@ -202,6 +245,19 @@ pub fn handle(
       json_response(404, [
         #("msg", json.string("404: Not Found")),
       ])
+  }
+}
+
+fn running_game(
+  lobby_actor: process.Subject(lobby.Message),
+  id: String,
+  next: fn(process.Subject(game.Message)) -> Response,
+) -> Response {
+  case lobby.get_game(lobby_actor, id) {
+    Ok(lobby.Running(subject:, ..)) -> next(subject)
+    Ok(_) ->
+      json_response(409, [#("msg", json.string("The game has not started"))])
+    Error(_) -> json_response(404, [#("msg", json.string("Game not found"))])
   }
 }
 

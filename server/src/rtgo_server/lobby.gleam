@@ -122,9 +122,9 @@ fn metadata(entry: Entry) -> Metadata {
       )
     }
     Running(subject:, settings:, ..) -> {
-      let game.Snapshot(players:, ..) = game.get_game(subject)
+      let game.Snapshot(players:, phase:, ..) = game.get_game(subject)
       Metadata(
-        phase: shared_game.Started,
+        phase: phase,
         player_count: dict.size(players),
         settings: settings,
       )

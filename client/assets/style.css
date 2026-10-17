@@ -13,27 +13,36 @@
 
 html, body { font-family: "Recursive Mono"; margin: 0; height: 100%; }
 #container { height: 100%; }
-#menu { position: absolute; left: 0px; top: 0px; z-index: 9; }
-#menu .item { float: left; padding: 1px 0 0 1px; }
-@media screen and (min-aspect-ratio: 1/1) {
-  #menu .item { float: none; }
-}
-
-#menu .icon { display: block; cursor: pointer; background-color: #222; color: #fff;
-  border: 3px solid #FFF; border-radius: 30px; line-height: 30px; width: 30px; height: 30px; text-align: center; }
-#menu .icon .tooltip { display: none; }
-#menu .icon:hover .tooltip { display: inline; }
+#menu { --circle-size: 30px; position: fixed; left: 0; top: 0; z-index: 9; display: flex; pointer-events: none; }
+#menu .item { position: relative; flex: none; padding: 1px 0 0 1px; pointer-events: auto; }
+#menu.playing-menu { --circle-size: clamp(16px, calc((100vw - 4px) / var(--menu-count) - 7px), 30px); }
+#menu .icon { display: block; position: relative; box-sizing: content-box; cursor: pointer; background: #222; color: #fff;
+  border: 3px solid #FFF; border-radius: 50%; line-height: var(--circle-size); width: var(--circle-size); height: var(--circle-size); text-align: center; padding: 0; }
+#menu .icon:focus-visible { outline: 2px solid #06C; outline-offset: -2px; }
+#menu .icon .tooltip { display: none; position: absolute; top: calc(100% + 6px); left: 0;
+  white-space: nowrap; background: #222; color: #FFF; padding: 4px 8px; border-radius: 8px; font-size: 12px; line-height: 1.5; }
 #menu .ping { font-size: 8px; }
-#menu .ping:hover { font-size: 16px; }
+#menu .timer-icon { font-size: clamp(7px, calc(var(--circle-size) * 0.35), 11px); font-weight: 700; }
+#menu .end-icon { border-color: #F80; }
+#menu .player-icon { border-color: #222; }
+#menu .own-player { box-shadow: inset 0 0 0 2px #08F; }
 #menu .icon.green { border-color: #9F0; }
 #menu .icon.yellow { border-color: #FC0; }
 #menu .icon.orange { border-color: #F80; }
-#menu .icon.red { border-color: #F00; }
-@media screen and (min-aspect-ratio: 1/1) {
-  #menu .icon:hover { width: auto; padding: 0 10px; }
+#menu .icon.red, #menu .icon.has-error { border-color: #F00; }
+.menu-panel { display: none; position: fixed; top: calc(var(--circle-size) + 10px); left: 4px;
+  width: min(360px, calc(100vw - 40px)); max-height: calc(100dvh - var(--circle-size) - 34px); overflow: auto;
+  padding: 12px; border: 2px solid #222; border-radius: 12px; background: #FFF; color: #222;
+  box-shadow: 0 3px 16px #0004; font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.menu-popover.expanded .menu-panel { display: block; }
+@media (hover: hover) {
+  .menu-popover:hover .menu-panel, #menu .icon:hover .tooltip { display: block; }
 }
-@media screen and (max-aspect-ratio: 1/1) {
-  #menu .icon:hover .tooltip { display: block; position: absolute; top: 25px; color: #222; }
+@media (orientation: landscape) {
+  #menu { flex-direction: column; }
+  #menu.playing-menu { --circle-size: clamp(16px, calc((100dvh - 4px) / var(--menu-count) - 7px), 30px); }
+  #menu .icon .tooltip { top: 0; left: calc(100% + 6px); }
+  .menu-panel { top: 4px; left: calc(var(--circle-size) + 10px); max-height: calc(100dvh - 32px); width: min(360px, calc(100vw - var(--circle-size) - 40px)); }
 }
 
 button, input, select {
@@ -46,19 +55,40 @@ button:hover { background: #EEE; }
 input { max-width: 100%; box-sizing: border-box; }
 button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow: none; }
 
-#board-container { display: flex; align-items: center; justify-content: center; height: 100%; overflow: hidden; }
-#board { width: 100vmin; height: 100vmin; background-color: #CB5; position: relative; }
-#lines { stroke: #0009; stroke-width: 1.5; }
-#stars { fill: #0009; }
+/* The board always occupies the largest square in the viewport. UI overlays
+   never participate in its sizing, even on square screens. */
+#play-page { --board-size: 100vmin; position: fixed; inset: 0; }
+@supports (height: 100dvh) {
+  #play-page { --board-size: min(100vw, 100dvh); }
+}
+#board-container { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+#board { flex: none; width: var(--board-size); height: var(--board-size); background: #CB5; }
+#board svg { display: block; width: 100%; height: 100%; }
+.ghost-stone { opacity: 0.4; pointer-events: none; }
+.board-point { fill: transparent; }
+.board-point.playable { cursor: pointer; touch-action: manipulation; }
+.board-point:focus-visible { outline: none; stroke: #06C; stroke-width: 0.06; }
+.play-status h2 { margin: 8px 0; }
+.live-players { list-style: none; padding: 0; display: grid; gap: 8px; }
+.live-players li { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.live-players li > span:last-child { margin-left: auto; }
+.player-color { display: inline-block; width: 16px; height: 16px; border: 1px solid #222; border-radius: 50%; }
 
-#ghost-stone { opacity: 0.4; }
-#stones, #links, #ghost-stone, #ghost-links, #removed-stones { stroke: #222; stroke-width: 4; }
-.black { fill: #222; transform-origin: center left; }
-.white { fill: #FFF; transform-origin: center right; }
-
-#score { position: absolute; left: 0; top: 0; width: 100vmin; height: 100vmin;
-  background: #000A; color: #FFF; text-align: center; line-height: 100vmin;
-  font-size: 80px; }
+/* Mirror only your timer along the two board edges, without taking space or clicks. */
+#countdown-bars { position: absolute; inset: 0; z-index: 1; pointer-events: none; }
+.countdown-bar { position: absolute; left: calc((100% - var(--board-size)) / 2);
+  width: var(--board-size); height: 5px; background: #DDD; }
+.countdown-first { top: max(0px, calc((100% - var(--board-size)) / 2 - 5px)); }
+.countdown-last { bottom: max(0px, calc((100% - var(--board-size)) / 2 - 5px)); }
+.countdown-fill { position: absolute; left: 0; bottom: 0; width: var(--remaining); height: 100%;
+  background: #000; transition: width 250ms linear, height 250ms linear; }
+@media (orientation: landscape) {
+  .countdown-bar { top: calc((100% - var(--board-size)) / 2); bottom: auto; left: auto;
+    width: 5px; height: var(--board-size); }
+  .countdown-first { left: max(0px, calc((100% - var(--board-size)) / 2 - 5px)); }
+  .countdown-last { right: max(0px, calc((100% - var(--board-size)) / 2 - 5px)); }
+  .countdown-fill { width: 100%; height: var(--remaining); }
+}
 
 #page-container { margin: 60px auto 0 auto; padding: 0 10px 10px 10px; max-width: 600px; }
 @media screen and (min-aspect-ratio: 1/1) {
@@ -67,7 +97,6 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow
 
 #page-container.lobby-page { max-width: 720px; margin-top: 0; padding: 72px 16px 32px; }
 .error { color: #A20; }
-.back-to-lobby { position: absolute; right: 12px; top: 12px; z-index: 1; }
 .lobby-header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .lobby-header h1 { margin: 0; }
 .lobby-section { margin-top: 24px; }

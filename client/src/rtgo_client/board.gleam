@@ -1,25 +1,126 @@
+import gleam/dict
+import gleam/dynamic/decode
 import gleam/float
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import lustre/attribute
 import lustre/element/svg
+import lustre/event
 import rtgo_shared/go
+import rtgo_shared/player
 
 // View
 
 const stroke = "#0009"
 
-pub fn view(game: go.Game) {
-  view_board(game.board_size)
-}
-
-fn view_board(board_size: Int) {
+pub fn view(
+  game: go.Game,
+  active_player: Option(player.Player),
+  hovered: Option(go.Point),
+  on_hover: fn(Option(go.Point)) -> msg,
+  on_play: fn(go.Point) -> msg,
+) {
+  let board_size = game.board_size
   let view_box =
     "0.5 0.5 " <> int.to_string(board_size) <> " " <> int.to_string(board_size)
+  let points =
+    list.flat_map(list.range(0, board_size - 1), fn(x) {
+      list.map(list.range(0, board_size - 1), fn(y) { #(x, y) })
+    })
 
-  svg.svg([attribute.attribute("viewBox", view_box)], [
-    svg.g([], view_lines(1, board_size)),
-    svg.g([], view_star_points(board_size)),
+  svg.svg(
+    [
+      attribute.attribute("viewBox", view_box),
+      attribute.attribute("aria-label", "Go board"),
+      event.on_mouse_leave(on_hover(None)),
+    ],
+    [
+      svg.g([], view_lines(1, board_size)),
+      svg.g([], view_star_points(board_size)),
+      svg.g(
+        [attribute.class("stones")],
+        dict.to_list(game.stones)
+          |> list.map(fn(entry) { stone(entry.0, entry.1, "stone") }),
+      ),
+      case active_player, hovered {
+        Some(p), Some(point) ->
+          case dict.has_key(game.stones, point) {
+            False -> stone(point, p, "ghost-stone")
+            True -> svg.g([], [])
+          }
+        _, _ -> svg.g([], [])
+      },
+      svg.g(
+        [],
+        list.map(points, fn(point) {
+          let available =
+            active_player != None && !dict.has_key(game.stones, point)
+          let handlers = case available {
+            False -> []
+            True -> [
+              attribute.attribute("role", "button"),
+              attribute.attribute("tabindex", "0"),
+              event.on_click(on_play(point)),
+              event.on_focus(on_hover(Some(point))),
+              event.on_blur(on_hover(None)),
+              event.advanced("keydown", {
+                use key <- decode.field("key", decode.string)
+                let handler = event.handler(on_play(point), True, False)
+                case key {
+                  "Enter" | " " -> decode.success(handler)
+                  _ -> decode.failure(handler, "Enter or Space")
+                }
+              }),
+            ]
+          }
+          svg.rect(list.append(
+            [
+              attribute.class(case available {
+                True -> "board-point playable"
+                False -> "board-point"
+              }),
+              event.on_mouse_enter(
+                on_hover(case available {
+                  True -> Some(point)
+                  False -> None
+                }),
+              ),
+              attribute.attribute(
+                "x",
+                float.to_string(int.to_float(point.0) +. 0.5),
+              ),
+              attribute.attribute(
+                "y",
+                float.to_string(int.to_float(point.1) +. 0.5),
+              ),
+              attribute.attribute("width", "1"),
+              attribute.attribute("height", "1"),
+              attribute.attribute(
+                "aria-label",
+                "Play at column "
+                  <> int.to_string(point.0 + 1)
+                  <> ", row "
+                  <> int.to_string(point.1 + 1),
+              ),
+            ],
+            handlers,
+          ))
+        }),
+      ),
+    ],
+  )
+}
+
+fn stone(point: go.Point, p: player.Player, class: String) {
+  svg.circle([
+    attribute.class(class),
+    attribute.attribute("cx", int.to_string(point.0 + 1)),
+    attribute.attribute("cy", int.to_string(point.1 + 1)),
+    attribute.attribute("r", "0.46"),
+    attribute.attribute("fill", player.color_to_str(p.color)),
+    attribute.attribute("stroke", "#222"),
+    attribute.attribute("stroke-width", "0.045"),
   ])
 }
 
