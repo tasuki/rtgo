@@ -89,6 +89,14 @@ pub fn start_game_request(
   authenticated_request(server_url <> games_path <> "/" <> id <> "/start", jwt)
 }
 
+pub fn add_bot_request(
+  server_url: String,
+  id: String,
+  jwt: String,
+) -> request.Request(String) {
+  authenticated_request(server_url <> games_path <> "/" <> id <> "/bots", jwt)
+}
+
 pub fn leave_game_request(
   server_url: String,
   id: String,

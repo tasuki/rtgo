@@ -5,6 +5,8 @@ DEBUG_LEVEL = "DEBUG"
 
 [tasks."dev:create-image"]
 run = 'podman build -t docker.io/tasuki/pi-rtgo:latest -f Containerfile.dev .'
+[tasks.image]
+run = 'podman build -t localhost/rtgo:latest -f Containerfile .'
 [tasks."client-config"]
 dir = "client"
 run = "cp config.${APP_ENV}.gleam src/config.gleam"
@@ -42,3 +44,8 @@ dir = "client"
 run = "gleam test"
 [tasks.test]
 depends = ["test:shared", "test:server", "test:client"]
+
+[tasks."test:single-view"]
+description = "Test production scoring over 20 fresh-engine KataGo trials"
+dir = "server"
+run = "gleam run -m rtgo_server/single_view_adjudication_test"

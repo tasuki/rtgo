@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/json
+import gleam/list
 import gleeunit/should
 import rtgo_shared/go
 import rtgo_shared/play_api
@@ -51,6 +52,37 @@ pub fn enclosed_regions_and_contested_space_score_correctly_test() {
   )
 }
 
+pub fn scoring_statuses_round_trip_test() {
+  list.each(
+    [
+      play_api.NotScored,
+      play_api.Scoring,
+      play_api.Estimated,
+      play_api.Unavailable,
+    ],
+    fn(status) {
+      let state =
+        play_api.State(
+          go.new_game(9),
+          [],
+          status != play_api.NotScored,
+          2,
+          0,
+          dict.new(),
+          status,
+          [],
+        )
+      let assert Ok(decoded) =
+        state
+        |> play_api.state_to_json
+        |> json.to_string
+        |> json.parse(play_api.state_decoder())
+      should.equal(decoded.scoring, status)
+      should.equal(decoded.dead_stones, [])
+    },
+  )
+}
+
 pub fn live_state_json_round_trip_test() {
   let black = Player("alice", Black)
   let assert Ok(board) = go.play(go.new_game(9), black, #(0, 0))
@@ -62,6 +94,8 @@ pub fn live_state_json_round_trip_test() {
       1,
       11_234,
       dict.new(),
+      play_api.NotScored,
+      [],
     )
   let assert Ok(decoded) =
     state
@@ -75,7 +109,13 @@ pub fn live_state_json_round_trip_test() {
   should.equal(decoded.end_in_ms, 11_234)
   should.equal(decoded.finished, False)
   let finished =
-    play_api.State(..state, finished: True, scores: go.score(board))
+    play_api.State(
+      ..state,
+      finished: True,
+      scores: go.score(board),
+      scoring: play_api.Estimated,
+      dead_stones: [#(0, 0)],
+    )
   let assert Ok(decoded) =
     finished
     |> play_api.state_to_json
@@ -83,4 +123,6 @@ pub fn live_state_json_round_trip_test() {
     |> json.parse(play_api.state_decoder())
   should.equal(decoded.scores, finished.scores)
   should.equal(decoded.finished, True)
+  should.equal(decoded.scoring, play_api.Estimated)
+  should.equal(decoded.dead_stones, [#(0, 0)])
 }

@@ -6,6 +6,7 @@ import gleam/javascript/promise
 import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
+import gleam/order
 import gleam/result
 import gleam/string
 import gleam/time/duration.{type Duration}
@@ -158,7 +159,7 @@ fn init(_) {
     modem.initial_uri()
     |> result.map(route_from_uri)
     |> result.unwrap(PlayerInfo)
-  let assert Ok(server_url) = config.server_urls |> list.first
+  let server_url = config.server_url()
   let #(player, login) = player_info.default_login(server_url, LoggedInResponse)
   let #(model, load) =
     initial_model(route, player, server_url)
@@ -229,6 +230,8 @@ pub type Msg {
   CancelGamePressed(String)
   GameLeft(Int, Result(Nil, rsvp.Error))
   GameCancelled(Int, Result(Nil, rsvp.Error))
+  AddBotPressed(String)
+  BotAdded(Int, Result(Nil, rsvp.Error))
   KickPlayerPressed(String, String)
   PlayerKicked(Int, String, Result(Nil, rsvp.Error))
   PlayerCooldownChanged(String, String)
@@ -293,6 +296,7 @@ fn action_error(error: rsvp.Error) -> String {
       || res.status == 403
       || res.status == 404
       || res.status == 409
+      || res.status == 503
     -> {
       let decoder = {
         use message <- decode.field("msg", decode.string)
@@ -315,6 +319,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     | GameStarted(version, _, _)
     | GameLeft(version, _)
     | GameCancelled(version, _)
+    | BotAdded(version, _)
     | PlayerKicked(version, _, _)
     | PlayerCooldownSet(version, _, _, _)
     | BoardRefresh(version)
@@ -329,7 +334,8 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     StartGamePressed(_)
     | KickPlayerPressed(_, _)
     | CancelGamePressed(_)
-    | ChooseGameColor(_) -> model.saving_cooldown
+    | ChooseGameColor(_)
+    | AddBotPressed(_) -> model.saving_cooldown
     _ -> False
   }
   case stale, follows_save {
@@ -709,7 +715,8 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         )
       }
       let poll = case model.live {
-        Some(state) if state.finished -> effect.none()
+        Some(state) if state.finished && state.scoring != play_api.Scoring ->
+          effect.none()
         _ -> wait(250, BoardRefresh(model.page_version))
       }
       #(model, effect.batch([poll, premove_effect]))
@@ -883,6 +890,22 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       ),
       effect.none(),
     )
+    AddBotPressed(id) ->
+      case host_room(model, id), model.pending_action {
+        Ok(#(jwt, _)), False -> #(
+          Model(..model, pending_action: True, action_error: None),
+          rsvp.send(
+            lobby_api.add_bot_request(model.server_url, id, jwt),
+            rsvp.expect_ok_response(fn(res) {
+              BotAdded(model.page_version, result.replace(res, Nil))
+            }),
+          ),
+        )
+        _, _ -> #(model, effect.none())
+      }
+    BotAdded(_, Ok(Nil)) ->
+      update(Model(..model, pending_action: False), Refresh(model.page_version))
+    BotAdded(_, Error(error)) -> action_failed(model, action_error(error))
     KickPlayerPressed(id, target) ->
       case host_room(model, id), model.pending_action {
         Ok(#(jwt, details)), False if target != details.host -> {
@@ -1523,21 +1546,22 @@ fn view_game_room(model: Model, details: lobby_api.GameDetails) -> Element(Msg) 
     html.p([], [html.text("Host: " <> host)]),
     html.p([], [html.text(settings_summary(details.settings))]),
     html.p([], [html.text("Share this page's URL to invite players.")]),
-    html.div([attribute.class("lobby-section")], [
-      html.h2([], [html.text("Players")]),
-      html.p([], [
-        html.text(
-          "Longer cooldowns handicap a player by making them wait longer between moves.",
-        ),
-      ]),
-      keyed.ul(
-        [attribute.class("players-list")],
-        list.map(players, fn(name) {
-          #(name, view_player(model, details, name, is_host))
-        }),
-      ),
-    ]),
     html.div([attribute.class("game-actions")], [
+      case is_host {
+        True ->
+          html.button(
+            [
+              attribute.disabled(
+                room_controls_busy(model)
+                || player_count
+                >= list.length(shared_game.colors(details.settings)),
+              ),
+              event.on_click(AddBotPressed(id)),
+            ],
+            [html.text("Add KataGo bot")],
+          )
+        False -> html.text("")
+      },
       case is_host, is_member {
         True, _ ->
           html.button(
@@ -1581,6 +1605,20 @@ fn view_game_room(model: Model, details: lobby_api.GameDetails) -> Element(Msg) 
         _, _ -> html.text("")
       },
     ]),
+    html.div([attribute.class("lobby-section")], [
+      html.h2([], [html.text("Players")]),
+      html.p([], [
+        html.text(
+          "Longer cooldowns handicap a player by making them wait longer between moves.",
+        ),
+      ]),
+      keyed.ul(
+        [attribute.class("players-list")],
+        list.map(players, fn(name) {
+          #(name, view_player(model, details, name, is_host))
+        }),
+      ),
+    ]),
   ])
 }
 
@@ -1595,6 +1633,10 @@ fn view_play(model: Model) -> Element(Msg) {
               html.div([attribute.id("board")], [
                 board.view(
                   model.game,
+                  model.live
+                    |> option.map(fn(s) { s.dead_stones })
+                    |> option.unwrap([]),
+                  final_area(model.live),
                   selectable_player(model),
                   model.hovered,
                   model.premove,
@@ -1619,11 +1661,72 @@ fn view_play(model: Model) -> Element(Msg) {
   }
 }
 
+fn result_ready(state: play_api.State) -> Bool {
+  state.finished
+  && {
+    state.scoring == play_api.Estimated || state.scoring == play_api.Unavailable
+  }
+}
+
+fn final_area(
+  live: Option(play_api.State),
+) -> Dict(go.Point, shared_player.Player) {
+  case live {
+    Some(state) ->
+      case result_ready(state) {
+        True -> state.board |> go.remove_stones(state.dead_stones) |> go.area
+        False -> dict.new()
+      }
+    None -> dict.new()
+  }
+}
+
+fn result_players(state: play_api.State) -> List(play_api.PlayerStatus) {
+  case result_ready(state) {
+    False -> state.players
+    True ->
+      list.sort(state.players, fn(a, b) {
+        let a_score =
+          dict.get(state.scores, a.player.username) |> result.unwrap(0)
+        let b_score =
+          dict.get(state.scores, b.player.username) |> result.unwrap(0)
+        case int.compare(b_score, a_score) {
+          order.Eq -> string.compare(a.player.username, b.player.username)
+          compared -> compared
+        }
+      })
+  }
+}
+
 fn seconds_text(milliseconds: Int) -> String {
   int.to_string({ milliseconds + 999 } / 1000) <> "s"
 }
 
 fn result_text(state: play_api.State) -> String {
+  case state.scoring {
+    play_api.Scoring -> "Scoring with KataGo…"
+    play_api.Estimated -> "KataGo estimate: " <> winner_text(state)
+    play_api.Unavailable -> "Unassisted area score: " <> winner_text(state)
+    play_api.NotScored -> "Awaiting score"
+  }
+}
+
+fn scoring_explanation(state: play_api.State) -> String {
+  case state.scoring {
+    play_api.Scoring ->
+      "KataGo is estimating dead groups. Moves are locked; the result will update automatically."
+    play_api.Estimated ->
+      "KataGo estimate. Dead stones excluded: "
+      <> int.to_string(list.length(state.dead_stones))
+      <> " (marked ×). Shading shows scored area (stones + territory). Uncertain groups stay. Multiplayer estimates are approximate. Chinese-like area scoring; no komi; shared borders are neutral."
+    play_api.Unavailable ->
+      "KataGo unavailable. This is an unassisted area score; dead stones were not removed. Shading shows scored area (stones + territory)."
+    play_api.NotScored ->
+      "Chinese-like area scoring: stones + surrounded space. No komi; shared borders are neutral."
+  }
+}
+
+fn winner_text(state: play_api.State) -> String {
   let best =
     list.fold(state.players, 0, fn(best, status) {
       int.max(
@@ -1632,7 +1735,7 @@ fn result_text(state: play_api.State) -> String {
       )
     })
   let winners =
-    state.players
+    result_players(state)
     |> list.filter(fn(status) {
       dict.get(state.scores, status.player.username) |> result.unwrap(0) == best
     })
@@ -1656,6 +1759,7 @@ fn view_live_status(model: Model) -> Element(Msg) {
       html.div([attribute.class("play-status")], [
         html.h2([], [
           html.text(case state.finished {
+            True if state.scoring == play_api.Scoring -> "Scoring…"
             True -> "Game over"
             False -> "Playing"
           }),
@@ -1673,8 +1777,7 @@ fn view_live_status(model: Model) -> Element(Msg) {
         },
         html.p([], [
           html.text(case state.finished {
-            True ->
-              "Area score: stones + surrounded space. No komi; shared borders are neutral."
+            True -> scoring_explanation(state)
             False ->
               "Everyone passing ends the game in "
               <> seconds_text(state.end_in_ms)
@@ -1683,7 +1786,7 @@ fn view_live_status(model: Model) -> Element(Msg) {
         ]),
         html.ul(
           [attribute.class("live-players")],
-          list.map(state.players, fn(status) {
+          list.map(result_players(state), fn(status) {
             let p = status.player
             let text = player_status_text(state, status)
             html.li([], [
@@ -1715,7 +1818,7 @@ fn view_live_status(model: Model) -> Element(Msg) {
           False ->
             html.small([], [
               html.text(
-                "Click or tap to play, or queue a premove during cooldown. Click elsewhere to replace it; click it again or press Escape to cancel. The bars disappear when you can play. Capture dead stones before everyone stops.",
+                "Click or tap to play, or queue a premove during cooldown. Click elsewhere to replace it; click it again or press Escape to cancel. The bars disappear when you can play. KataGo estimates dead groups when play ends.",
               ),
             ])
         },
@@ -1728,6 +1831,7 @@ fn player_status_text(
   status: play_api.PlayerStatus,
 ) -> String {
   case state.finished {
+    True if state.scoring == play_api.Scoring -> "Scoring…"
     True ->
       int.to_string(
         dict.get(state.scores, status.player.username) |> result.unwrap(0),
@@ -1818,6 +1922,7 @@ fn view_menu(model: Model) -> Element(Msg) {
               model,
               "end",
               case state.finished {
+                True if state.scoring == play_api.Scoring -> "…"
                 True -> "✓"
                 False -> int.to_string({ state.end_in_ms + 999 } / 1000)
               },
@@ -1827,21 +1932,24 @@ fn view_menu(model: Model) -> Element(Msg) {
               [
                 html.strong([], [
                   html.text(case state.finished {
+                    True if state.scoring == play_api.Scoring -> "Scoring…"
                     True -> "Game over"
                     False -> "Automatic passing"
                   }),
                 ]),
                 html.p([], [html.text(end_label)]),
                 html.p([], [
-                  html.text(
-                    "A player passes after 10 seconds of being ready. A move clears their pass; everyone passing ends the game.",
-                  ),
+                  html.text(case state.finished {
+                    True -> scoring_explanation(state)
+                    False ->
+                      "A player passes after 10 seconds of being ready. A move clears their pass; everyone passing ends the game."
+                  }),
                 ]),
               ],
             )
           [
             end,
-            ..list.map(state.players, fn(status) {
+            ..list.map(result_players(state), fn(status) {
               let p = status.player
               let own = case credentials(model) {
                 Ok(#(name, _)) -> name == p.username
@@ -1855,6 +1963,7 @@ fn view_menu(model: Model) -> Element(Msg) {
                 }
               let label = name <> ": " <> player_status_text(state, status)
               let text = case state.finished {
+                True if state.scoring == play_api.Scoring -> "…"
                 True ->
                   int.to_string(
                     dict.get(state.scores, p.username) |> result.unwrap(0),

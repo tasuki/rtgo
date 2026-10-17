@@ -6,6 +6,7 @@ import gleam/list
 import gleam/otp/actor
 import gleam/result
 import gleam/string
+import rtgo_server/adjudication
 import rtgo_shared/game as shared_game
 import rtgo_shared/go
 import rtgo_shared/play_api
@@ -24,6 +25,10 @@ pub type State {
     ready_at: Dict(String, Int),
     phase: shared_game.GamePhase,
     revision: Int,
+    scoring: play_api.ScoringStatus,
+    scoring_started: Bool,
+    scores: Dict(String, Int),
+    dead_stones: List(go.Point),
   )
 }
 
@@ -49,6 +54,7 @@ pub type Message {
   Play(player: String, move: go.Point, reply: Subject(Result(Nil, Error)))
   GetGame(reply: Subject(Snapshot))
   Tick(Subject(Message))
+  Scored(Result(List(go.Point), Nil))
 }
 
 @external(erlang, "erlang", "monotonic_time")
@@ -72,6 +78,10 @@ pub fn new_state(
     dict.map_values(players, fn(_, _) { now }),
     shared_game.Started,
     0,
+    play_api.NotScored,
+    False,
+    dict.new(),
+    [],
   )
 }
 
@@ -83,7 +93,12 @@ pub fn advance(state: State, now: Int) -> State {
     })
   {
     True ->
-      State(..state, phase: shared_game.Finished, revision: state.revision + 1)
+      State(
+        ..state,
+        phase: shared_game.Finished,
+        scoring: play_api.Scoring,
+        revision: state.revision + 1,
+      )
     False -> state
   }
 }
@@ -143,10 +158,6 @@ pub fn snapshot_at(state: State, now: Int) -> Snapshot {
   let end_in =
     list.fold(statuses, 0, fn(acc, status) { int.max(acc, status.pass_in_ms) })
   let finished = state.phase == shared_game.Finished
-  let scores = case finished {
-    True -> go.score(state.board)
-    False -> dict.new()
-  }
   Snapshot(
     state.players,
     state.board,
@@ -159,9 +170,37 @@ pub fn snapshot_at(state: State, now: Int) -> Snapshot {
       finished,
       state.revision,
       end_in,
-      scores,
+      state.scores,
+      state.scoring,
+      state.dead_stones,
     ),
   )
+}
+
+/// Keep the actual final position/history intact. Only the scoring copy loses
+/// estimated dead stones, so clients can show exactly what was adjudicated.
+pub fn finish_scoring(
+  state: State,
+  result: Result(List(go.Point), Nil),
+) -> State {
+  case
+    state.phase == shared_game.Finished && state.scoring == play_api.Scoring
+  {
+    False -> state
+    True -> {
+      let #(scoring, dead_stones) = case result {
+        Ok(dead) -> #(play_api.Estimated, dead)
+        Error(_) -> #(play_api.Unavailable, [])
+      }
+      State(
+        ..state,
+        scoring: scoring,
+        dead_stones: dead_stones,
+        scores: go.score(go.remove_stones(state.board, dead_stones)),
+        revision: state.revision + 1,
+      )
+    }
+  }
 }
 
 fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
@@ -183,15 +222,31 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       process.send(reply, snapshot_at(state, now))
       actor.continue(state)
     }
+    Scored(result) -> actor.continue(finish_scoring(state, result))
     Tick(subject) -> {
-      case state.phase {
-        shared_game.Started -> {
+      case state.phase, state.scoring, state.scoring_started {
+        shared_game.Started, _, _ -> {
           let _ = process.send_after(subject, 100, Tick(subject))
-          Nil
+          actor.continue(state)
         }
-        _ -> Nil
+        shared_game.Finished, play_api.Scoring, False -> {
+          // Inference needs only the position, not a copy of the superko history.
+          let board =
+            go.Game(
+              ..go.new_game(state.board.board_size),
+              stones: state.board.stones,
+            )
+          let _ =
+            process.spawn_unlinked(fn() {
+              process.send(subject, Scored(adjudication.estimate(board)))
+            })
+          // A failed/stalled engine must not leave the final result pending
+          // forever. Late worker replies are ignored after this fallback.
+          let _ = process.send_after(subject, 30_000, Scored(Error(Nil)))
+          actor.continue(State(..state, scoring_started: True))
+        }
+        _, _, _ -> actor.continue(state)
       }
-      actor.continue(state)
     }
   }
 }

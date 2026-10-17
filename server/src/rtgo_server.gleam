@@ -5,9 +5,11 @@ import gleam/int
 import gleam/result
 import logging
 import mist
+import rtgo_server/katago
 import rtgo_server/lobby
 import rtgo_server/players
 import rtgo_server/router
+import rtgo_server/web
 import wisp/wisp_mist
 import ywt/sign_key
 
@@ -27,11 +29,24 @@ pub fn main() -> Nil {
   let assert Ok(sign_key) = sign_key.hs256(sign_key_secret)
   let players_actor = players.start(sign_key)
   let lobby_actor = lobby.start()
+  case katago.available() {
+    True -> {
+      let assert Ok(_) = katago.start()
+      Nil
+    }
+    False ->
+      logging.log(logging.Info, "KataGo is not installed; bots unavailable")
+  }
 
   let assert Ok(_) =
-    wisp_mist.handler(router.handle(players_actor, lobby_actor, _), secret_key)
+    wisp_mist.handler(
+      web.handle(_, "/app/static", router.handle(players_actor, lobby_actor, _)),
+      secret_key,
+    )
     |> mist.new
     |> mist.port(port)
+    |> mist.bind("0.0.0.0")
+    |> mist.with_ipv6
     |> mist.start()
 
   process.sleep_forever()

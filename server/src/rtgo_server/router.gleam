@@ -5,6 +5,7 @@ import gleam/json
 import gleam/list
 import gleam/string
 import rtgo_server/game
+import rtgo_server/katago
 import rtgo_server/lobby
 import rtgo_server/players
 import rtgo_server/router_utils.{allow_cors, json_response, json_response_obj}
@@ -228,6 +229,17 @@ pub fn handle(
       }
     }
 
+    Post, ["games", id, "bots"] -> {
+      use username <- router_utils.require_player(req, players_actor)
+      case katago.available() {
+        True -> change_response(lobby.add_bot(lobby_actor, id, username))
+        False ->
+          json_response(503, [
+            #("msg", json.string("KataGo is not installed on this server")),
+          ])
+      }
+    }
+
     Post, ["games", id, "start"] -> {
       use username <- router_utils.require_player(req, players_actor)
       case lobby.start_game(lobby_actor, id, username) {
@@ -351,6 +363,8 @@ fn change_response(result: Result(Nil, lobby.Error)) -> Response {
       json_response(400, [
         #("msg", json.string("That color is not available for this game type")),
       ])
+    Error(lobby.RoomFull) ->
+      json_response(409, [#("msg", json.string("This room is full"))])
     Error(lobby.Kicked) ->
       json_response(403, [
         #("msg", json.string("You were kicked from this room by the host")),

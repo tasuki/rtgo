@@ -1,5 +1,6 @@
 import gleam/dict
 import gleam/json
+import gleam/list
 import gleam/option.{None, Some}
 import gleam/string
 import gleeunit/should
@@ -32,6 +33,8 @@ fn state() -> play_api.State {
     0,
     10_000,
     dict.new(),
+    play_api.NotScored,
+    [],
   )
 }
 
@@ -212,6 +215,7 @@ pub fn cooldown_allows_premoves_but_spectators_and_finished_games_cannot_move_te
       revision: 1,
       end_in_ms: 0,
       scores: dict.from_list([#("alice", 42), #("bob", 39)]),
+      scoring: play_api.Estimated,
     )
   let ended = step(model, app.BoardLoaded(model.page_version, Ok(finished)))
   should.equal(step(ended, app.PlayPoint(#(0, 0))), ended)
@@ -239,6 +243,162 @@ pub fn cooldown_allows_premoves_but_spectators_and_finished_games_cannot_move_te
     tied |> app.view |> element.to_string |> string.contains("Tie: alice, bob"),
     True,
   )
+}
+
+pub fn scoring_waits_without_a_provisional_winner_then_shows_estimated_dead_stones_test() {
+  let model = loaded()
+  let board =
+    go.Game(
+      ..state().board,
+      stones: dict.from_list([
+        #(#(0, 0), player.Player("alice", player.Black)),
+        #(#(1, 1), player.Player("bob", player.White)),
+      ]),
+    )
+  let pending =
+    play_api.State(
+      ..state(),
+      board: board,
+      finished: True,
+      scoring: play_api.Scoring,
+      revision: 1,
+      end_in_ms: 0,
+    )
+  let waiting = step(model, app.BoardLoaded(model.page_version, Ok(pending)))
+  let html = waiting |> app.view |> element.to_string
+  should.equal(string.contains(html, "Scoring with KataGo"), True)
+  should.equal(string.contains(html, "wins with"), False)
+  should.equal(string.contains(html, "Tie:"), False)
+  should.equal(step(waiting, app.PlayPoint(#(2, 2))), waiting)
+  let refresh = step(waiting, app.BoardRefresh(model.page_version))
+  should.equal(refresh.loading_board, True)
+  let final =
+    play_api.State(
+      ..pending,
+      scoring: play_api.Estimated,
+      scores: dict.from_list([#("alice", 81)]),
+      dead_stones: [#(1, 1)],
+      revision: 2,
+    )
+  let scored = step(refresh, app.BoardLoaded(model.page_version, Ok(final)))
+  let html = scored |> app.view |> element.to_string
+  should.equal(
+    string.contains(html, "KataGo estimate: alice wins with 81 points."),
+    True,
+  )
+  should.equal(
+    string.contains(html, "Estimated dead stone at column 2, row 2"),
+    True,
+  )
+  should.equal(string.contains(html, "class=\"stone dead-stone\""), True)
+  should.equal(scored.game.stones, board.stones)
+  // A late poll from the pending phase must not erase the adjudicated result.
+  should.equal(
+    step(scored, app.BoardLoaded(model.page_version, Ok(pending))).live,
+    Some(final),
+  )
+}
+
+pub fn missing_engine_is_explicit_and_does_not_mark_any_dead_stones_test() {
+  let model = loaded()
+  let fallback =
+    play_api.State(
+      ..state(),
+      finished: True,
+      scoring: play_api.Unavailable,
+      revision: 1,
+    )
+  let ended = step(model, app.BoardLoaded(model.page_version, Ok(fallback)))
+  let html = ended |> app.view |> element.to_string
+  should.equal(string.contains(html, "KataGo unavailable"), True)
+  should.equal(string.contains(html, "dead stones were not removed"), True)
+  should.equal(string.contains(html, "Unassisted area score:"), True)
+  should.equal(string.contains(html, "dead-stone-marker"), False)
+}
+
+pub fn territory_only_appears_with_results_and_matches_the_scoring_copy_test() {
+  let model = loaded()
+  let alice = player.Player("alice", player.Black)
+  let bob = player.Player("bob", player.White)
+  let assert Ok(board) = go.play(state().board, bob, #(2, 2))
+  let assert Ok(board) = go.play(board, bob, #(0, 0))
+  let ring =
+    list.range(1, 4)
+    |> list.flat_map(fn(x) {
+      list.range(1, 4)
+      |> list.filter_map(fn(y) {
+        case x == 1 || x == 4 || y == 1 || y == 4 {
+          True -> Ok(#(x, y))
+          False -> Error(Nil)
+        }
+      })
+    })
+  let board =
+    list.fold(ring, board, fn(board, point) {
+      let assert Ok(board) = go.play(board, alice, point)
+      board
+    })
+  list.each(
+    [#(play_api.NotScored, False), #(play_api.Scoring, True)],
+    fn(status) {
+      let live =
+        play_api.State(
+          ..state(),
+          board: board,
+          scoring: status.0,
+          finished: status.1,
+          revision: 1,
+        )
+      let view =
+        step(model, app.BoardLoaded(model.page_version, Ok(live))) |> app.view
+      should.equal(
+        query.find_all(view, query.element(query.class("territory-point"))),
+        [],
+      )
+    },
+  )
+  let scoring_board = go.remove_stones(board, [#(2, 2)])
+  list.each([play_api.Estimated, play_api.Unavailable], fn(status) {
+    let live =
+      play_api.State(
+        ..state(),
+        board: case status {
+          play_api.Unavailable -> scoring_board
+          _ -> board
+        },
+        finished: True,
+        revision: 2,
+        scoring: status,
+        dead_stones: case status {
+          play_api.Estimated -> [#(2, 2)]
+          _ -> []
+        },
+        scores: go.score(scoring_board),
+      )
+    let view =
+      step(model, app.BoardLoaded(model.page_version, Ok(live))) |> app.view
+    let points =
+      query.find_all(view, query.element(query.class("territory-point")))
+    should.equal(list.length(points), 17)
+    list.each(["alice", "bob"], fn(name) {
+      let count =
+        points
+        |> list.filter(fn(point) {
+          point
+          |> element.to_string
+          |> string.contains("data-owner=\"" <> name <> "\"")
+        })
+        |> list.length
+      should.equal(dict.get(live.scores, name), Ok(count))
+    })
+    // Include counted live/dead locations, but not shared outside space.
+    query.find(view, query.element(query.attribute("data-point", "2,2")))
+    |> should.be_ok
+    query.find(view, query.element(query.attribute("data-point", "1,1")))
+    |> should.be_ok
+    query.find(view, query.element(query.attribute("data-point", "0,1")))
+    |> should.be_error
+  })
 }
 
 pub fn failed_moves_preserve_board_and_allow_retry_test() {

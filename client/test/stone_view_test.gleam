@@ -1,3 +1,4 @@
+import gleam/dict
 import gleam/list
 import gleam/option.{Some}
 import gleam/string
@@ -14,6 +15,8 @@ pub fn placed_hovered_and_queued_stones_share_normal_geometry_test() {
   let view =
     board.view(
       game,
+      [],
+      dict.new(),
       Some(p),
       Some(#(3, 3)),
       Some(#(4, 4)),

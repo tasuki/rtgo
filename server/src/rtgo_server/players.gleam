@@ -8,6 +8,7 @@ import gleam/time/duration.{type Duration}
 import gleam/time/timestamp.{type Timestamp}
 import rtgo_server/log
 import rtgo_shared/auth
+import rtgo_shared/bot
 import rtgo_shared/player
 import ywt
 import ywt/claim
@@ -90,7 +91,7 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
         }
         Error(Nil) -> False
       }
-      case is_taken {
+      case is_taken || bot.is_bot(username) {
         True -> {
           log.info("Can't register, already taken: " <> username)
           process.send(client, Error(auth.RegistrationFailedResponse(username)))

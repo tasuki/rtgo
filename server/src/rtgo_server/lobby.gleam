@@ -5,8 +5,10 @@ import gleam/list
 import gleam/otp/actor
 import gleam/result
 import gleam/set.{type Set}
+import rtgo_server/bot
 import rtgo_server/game
 import rtgo_server/log
+import rtgo_shared/bot as shared_bot
 import rtgo_shared/game as shared_game
 import rtgo_shared/player
 import rtgo_shared/pronounceable
@@ -54,6 +56,7 @@ pub type Error {
   Kicked
   ColorTaken
   InvalidColor
+  RoomFull
 }
 
 pub type Message {
@@ -63,6 +66,7 @@ pub type Message {
     preferred_color: player.Color,
     reply: Subject(Result(String, Error)),
   )
+  AddBot(id: String, host: String, reply: Subject(Result(Nil, Error)))
   ListGames(reply: Subject(Dict(String, Metadata)))
   GetGame(id: String, reply: Subject(Result(Entry, Error)))
   JoinGame(
@@ -294,6 +298,10 @@ fn handle_start_game(
             True -> {
               let subject =
                 game.start(players, settings, player_cooldowns(lobby))
+              players
+              |> dict.keys
+              |> list.filter(shared_bot.is_bot)
+              |> list.each(fn(name) { bot.start(subject, name) })
               let new_games =
                 dict.insert(
                   state.games,
@@ -365,6 +373,38 @@ fn hosted_lobby(state: State, id: String, name: String) -> Result(Lobby, Error) 
     Running(host:, ..) if host != name -> Error(NotHost)
     Running(..) -> Error(AlreadyStarted)
   }
+}
+
+fn bot_name(room: Lobby) -> String {
+  let name = shared_bot.name_prefix <> pronounceable.generate(4)
+  case dict.has_key(room.players, name) || set.contains(room.kicked, name) {
+    True -> bot_name(room)
+    False -> name
+  }
+}
+
+fn add_bot_to_room(
+  state: State,
+  id: String,
+  host: String,
+) -> Result(State, Error) {
+  use room <- result.try(hosted_lobby(state, id, host))
+  let name = bot_name(room)
+  use players <- result.try(
+    add_player(room.players, name, room.settings, player.White)
+    |> result.replace_error(RoomFull),
+  )
+  let room =
+    Lobby(
+      ..room,
+      players: players,
+      cooldowns: dict.insert(
+        room.cooldowns,
+        name,
+        shared_game.base_cooldown(room.settings),
+      ),
+    )
+  Ok(State(dict.insert(state.games, id, Open(room))))
 }
 
 fn kick(
@@ -483,6 +523,8 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       )
       actor.continue(state)
     }
+    AddBot(id, host, reply) ->
+      finish_change(state, reply, add_bot_to_room(state, id, host))
     ListGames(reply) -> {
       process.send(reply, list_metadata(state.games))
       actor.continue(state)
@@ -532,6 +574,14 @@ pub fn create_game_with_preference(
   process.call(subject, 100, fn(client) {
     CreateGame(host, settings, preferred, client)
   })
+}
+
+pub fn add_bot(
+  subject: Subject(Message),
+  id: String,
+  host: String,
+) -> Result(Nil, Error) {
+  process.call(subject, 100, fn(reply) { AddBot(id, host, reply) })
 }
 
 pub fn get_game(subject: Subject(Message), id: String) -> Result(Entry, Error) {

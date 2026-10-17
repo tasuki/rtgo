@@ -44,6 +44,8 @@ fn model() -> app.Model {
       0,
       12_500,
       dict.new(),
+      play_api.NotScored,
+      [],
     )
   app.Model(
     ..app.initial_model(
@@ -206,6 +208,77 @@ pub fn circle_popovers_toggle_for_touch_and_keyboard_and_reset_on_navigation_tes
   should.equal(navigated.expanded_menu, None)
 }
 
+fn ranking_model(scoring: play_api.ScoringStatus, finished: Bool) -> app.Model {
+  let initial = model()
+  let assert Some(live) = initial.live
+  app.Model(
+    ..initial,
+    live: Some(
+      play_api.State(
+        ..live,
+        players: [
+          play_api.PlayerStatus(player.Player("alice", player.Black), 0, 0),
+          play_api.PlayerStatus(player.Player("charlie", player.Blue), 0, 0),
+          play_api.PlayerStatus(player.Player("zeta", player.Green), 0, 0),
+          play_api.PlayerStatus(player.Player("bob", player.White), 0, 0),
+        ],
+        scores: dict.from_list([#("zeta", 100), #("bob", 90), #("charlie", 90)]),
+        scoring: scoring,
+        finished: finished,
+      ),
+    ),
+  )
+}
+
+pub fn final_results_and_player_circles_sort_by_points_then_name_test() {
+  list.each([play_api.Estimated, play_api.Unavailable], fn(scoring) {
+    let view = app.view(ranking_model(scoring, True))
+    let assert Ok(results) =
+      query.find(view, query.element(query.class("live-players")))
+    let names =
+      query.find_all(results, query.element(query.tag("strong")))
+      |> list.map(element.to_string)
+    should.equal(names, [
+      "<strong>zeta</strong>",
+      "<strong>bob</strong>",
+      "<strong>charlie</strong>",
+      "<strong>alice</strong>",
+    ])
+    let circles =
+      query.find_all(view, query.element(query.class("player-icon")))
+    should.equal(list.length(circles), 4)
+    list.zip(circles, ["zeta", "bob", "charlie", "alice"])
+    |> list.each(fn(entry) {
+      should.equal(
+        entry.0
+          |> element.to_string
+          |> string.contains("aria-label=\"" <> entry.1),
+        True,
+      )
+    })
+  })
+}
+
+pub fn player_order_stays_stable_during_play_and_pending_scoring_test() {
+  list.each(
+    [#(play_api.NotScored, False), #(play_api.Scoring, True)],
+    fn(status) {
+      let view = app.view(ranking_model(status.0, status.1))
+      let assert Ok(results) =
+        query.find(view, query.element(query.class("live-players")))
+      let names =
+        query.find_all(results, query.element(query.tag("strong")))
+        |> list.map(element.to_string)
+      should.equal(names, [
+        "<strong>alice</strong>",
+        "<strong>charlie</strong>",
+        "<strong>zeta</strong>",
+        "<strong>bob</strong>",
+      ])
+    },
+  )
+}
+
 pub fn finished_game_keeps_full_board_and_puts_scores_in_menu_test() {
   let initial = model()
   let assert Some(live) = initial.live
@@ -217,6 +290,7 @@ pub fn finished_game_keeps_full_board_and_puts_scores_in_menu_test() {
           ..live,
           finished: True,
           scores: dict.from_list([#("alice", 200), #("bob", 161)]),
+          scoring: play_api.Estimated,
         ),
       ),
     )

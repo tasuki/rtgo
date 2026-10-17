@@ -16,6 +16,8 @@ const stroke = "#0009"
 
 pub fn view(
   game: go.Game,
+  dead_stones: List(go.Point),
+  area: dict.Dict(go.Point, player.Player),
   active_player: Option(player.Player),
   hovered: Option(go.Point),
   premove: Option(go.Point),
@@ -49,10 +51,52 @@ pub fn view(
       svg.g([], view_lines(1, board_size)),
       svg.g([], view_star_points(board_size)),
       svg.g(
+        [
+          attribute.class("territory-overlay"),
+          attribute.attribute("aria-hidden", "true"),
+          attribute.attribute("pointer-events", "none"),
+          attribute.attribute("opacity", "0.32"),
+          attribute.attribute("shape-rendering", "crispEdges"),
+        ],
+        area
+          |> dict.to_list
+          |> list.map(fn(entry) {
+            let #(point, owner) = entry
+            svg.rect([
+              attribute.class("territory-point"),
+              attribute.attribute("data-owner", owner.username),
+              attribute.attribute(
+                "data-point",
+                int.to_string(point.0) <> "," <> int.to_string(point.1),
+              ),
+              attribute.attribute(
+                "x",
+                float.to_string(int.to_float(point.0) +. 0.5),
+              ),
+              attribute.attribute(
+                "y",
+                float.to_string(int.to_float(point.1) +. 0.5),
+              ),
+              attribute.attribute("width", "1"),
+              attribute.attribute("height", "1"),
+              attribute.attribute("fill", player.color_to_str(owner.color)),
+            ])
+          }),
+      ),
+      svg.g(
         [attribute.class("stones")],
         dict.to_list(game.stones)
-          |> list.map(fn(entry) { stone(entry.0, entry.1, "stone") }),
+          |> list.map(fn(entry) {
+            case list.contains(dead_stones, entry.0) {
+              True ->
+                svg.g([attribute.attribute("opacity", "0.35")], [
+                  stone(entry.0, entry.1, "stone dead-stone"),
+                ])
+              False -> stone(entry.0, entry.1, "stone")
+            }
+          }),
       ),
+      svg.g([], list.map(dead_stones, dead_stone_marker)),
       case active_player, premove {
         Some(p), Some(point) ->
           case dict.has_key(game.stones, point) {
@@ -130,6 +174,43 @@ pub fn view(
           ))
         }),
       ),
+    ],
+  )
+}
+
+fn dead_stone_marker(point: go.Point) {
+  let x = int.to_float(point.0 + 1)
+  let y = int.to_float(point.1 + 1)
+  svg.g(
+    [
+      attribute.class("dead-stone-marker"),
+      attribute.attribute("role", "img"),
+      attribute.attribute(
+        "aria-label",
+        "Estimated dead stone at column "
+          <> int.to_string(point.0 + 1)
+          <> ", row "
+          <> int.to_string(point.1 + 1),
+      ),
+      attribute.attribute("pointer-events", "none"),
+    ],
+    [
+      svg.path([
+        attribute.attribute(
+          "d",
+          "M "
+            <> float.to_string(x -. 0.2)
+            <> " "
+            <> float.to_string(y -. 0.2)
+            <> " l 0.4 0.4 M "
+            <> float.to_string(x -. 0.2)
+            <> " "
+            <> float.to_string(y +. 0.2)
+            <> " l 0.4 -0.4",
+        ),
+        attribute.attribute("stroke", "#D22"),
+        attribute.attribute("stroke-width", "0.08"),
+      ]),
     ],
   )
 }

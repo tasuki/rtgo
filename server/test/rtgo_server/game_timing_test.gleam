@@ -85,7 +85,8 @@ pub fn invalid_moves_do_not_extend_cooldown_or_prevent_auto_pass_test() {
   should.equal(ended.phase, settings.Finished)
   should.equal(ended.live.finished, True)
   should.equal(ended.live.end_in_ms, 0)
-  should.equal(dict.get(ended.live.scores, "alice"), Ok(361))
+  // Scoring is asynchronous; never publish a provisional winner here.
+  should.equal(dict.size(ended.live.scores), 0)
   should.equal(
     game.play_at(state, "bob", #(1, 0), -85_000),
     Error(game.GameFinished),

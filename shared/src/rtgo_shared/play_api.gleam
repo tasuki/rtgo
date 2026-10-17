@@ -12,6 +12,13 @@ pub type PlayerStatus {
   PlayerStatus(player: player.Player, cooldown_ms: Int, pass_in_ms: Int)
 }
 
+pub type ScoringStatus {
+  NotScored
+  Scoring
+  Estimated
+  Unavailable
+}
+
 pub type State {
   State(
     board: go.Game,
@@ -20,6 +27,8 @@ pub type State {
     revision: Int,
     end_in_ms: Int,
     scores: Dict(String, Int),
+    scoring: ScoringStatus,
+    dead_stones: List(go.Point),
   )
 }
 
@@ -99,6 +108,21 @@ pub fn state_to_json(state: State) -> json.Json {
     #("revision", json.int(state.revision)),
     #("end_in_ms", json.int(state.end_in_ms)),
     #("scores", json.dict(state.scores, fn(name) { name }, json.int)),
+    #(
+      "scoring",
+      json.string(case state.scoring {
+        NotScored -> "not_scored"
+        Scoring -> "pending"
+        Estimated -> "estimated"
+        Unavailable -> "unavailable"
+      }),
+    ),
+    #(
+      "dead_stones",
+      json.array(state.dead_stones, fn(point) {
+        json.object([#("x", json.int(point.0)), #("y", json.int(point.1))])
+      }),
+    ),
   ])
 }
 
@@ -125,6 +149,28 @@ pub fn state_decoder() -> decode.Decoder(State) {
   use revision <- decode.field("revision", decode.int)
   use end_in <- decode.field("end_in_ms", decode.int)
   use scores <- decode.field("scores", decode.dict(decode.string, decode.int))
+  use scoring <- decode.field(
+    "scoring",
+    decode.then(decode.string, fn(value) {
+      case value {
+        "not_scored" -> decode.success(NotScored)
+        "pending" -> decode.success(Scoring)
+        "estimated" -> decode.success(Estimated)
+        "unavailable" -> decode.success(Unavailable)
+        _ -> decode.failure(NotScored, "scoring status")
+      }
+    }),
+  )
+  use dead_stones <- decode.field("dead_stones", decode.list(move_decoder()))
   let board = go.Game(..go.new_game(size), stones: dict.from_list(stones))
-  decode.success(State(board, players, finished, revision, end_in, scores))
+  decode.success(State(
+    board,
+    players,
+    finished,
+    revision,
+    end_in,
+    scores,
+    scoring,
+    dead_stones,
+  ))
 }

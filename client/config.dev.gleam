@@ -1,3 +1,3 @@
-pub const server_urls = [
-  "http://localhost:8000",
-]
+pub fn server_url() -> String {
+  "http://localhost:8000"
+}

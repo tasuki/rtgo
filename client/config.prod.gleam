@@ -1,3 +1,3 @@
-pub const server_urls = [
-  "https://rtgo.tasuki.org/api",
-]
+pub fn server_url() -> String {
+  "https://rtgo.tasuki.org/api"
+}

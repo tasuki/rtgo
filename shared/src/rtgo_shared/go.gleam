@@ -161,35 +161,73 @@ fn neighbors(point: Point, size: Int) -> List(Point) {
   })
 }
 
+/// Connected groups retain their real player identities, not a two-color projection.
+pub fn groups(game: Game) -> List(#(Player, Set(Point))) {
+  let #(_, groups) =
+    dict.fold(game.stones, #(set.new(), []), fn(acc, point, player) {
+      let #(visited, groups) = acc
+      case set.contains(visited, point) {
+        True -> acc
+        False -> {
+          let group = get_group(game.stones, point, player)
+          #(set.union(visited, group), [#(player, group), ..groups])
+        }
+      }
+    })
+  groups
+}
+
 /// Area scoring, without komi: stones plus empty regions bordered by exactly
 /// one player. Mixed borders (including multiplayer) and unclaimed space are neutral.
-/// Dead stones must be captured before the game ends.
+/// Scores the supplied position as-is; dead stones must first be removed from it.
 pub fn score(game: Game) -> Dict(String, Int) {
+  dict.fold(area(game), dict.new(), fn(scores, _, player) {
+    add_score(scores, player.username, 1)
+  })
+}
+
+/// Every counted intersection, including live stones: also used for shading.
+pub fn area(game: Game) -> Dict(Point, Player) {
+  dict.merge(game.stones, territory(game))
+}
+
+/// The exact empty intersections counted by area scoring. Mixed borders and
+/// unclaimed regions have no owner. Live stones themselves are not territory.
+pub fn territory(game: Game) -> Dict(Point, Player) {
   let points =
     list.flat_map(list.range(0, game.board_size - 1), fn(x) {
       list.map(list.range(0, game.board_size - 1), fn(y) { #(x, y) })
     })
-  let stones =
-    dict.fold(game.stones, dict.new(), fn(scores, _, player) {
-      add_score(scores, player.username, 1)
-    })
-  let #(_, scores) =
-    list.fold(points, #(set.new(), stones), fn(acc, point) {
-      let #(visited, scores) = acc
+  let #(_, territory) =
+    list.fold(points, #(set.new(), dict.new()), fn(acc, point) {
+      let #(visited, territory) = acc
       case set.contains(visited, point) || dict.has_key(game.stones, point) {
         True -> acc
         False -> {
           let #(region, borders) =
             empty_region(game, [point], set.new(), set.new())
-          let scores = case set.to_list(borders) {
-            [name] -> add_score(scores, name, set.size(region))
-            _ -> scores
+          let territory = case set.to_list(borders) {
+            [owner] ->
+              set.fold(region, territory, fn(territory, point) {
+                dict.insert(territory, point, owner)
+              })
+            _ -> territory
           }
-          #(set.union(visited, region), scores)
+          #(set.union(visited, region), territory)
         }
       }
     })
-  scores
+  territory
+}
+
+/// A scoring copy: preserve the played position and history in the original.
+pub fn remove_stones(game: Game, points: List(Point)) -> Game {
+  Game(
+    ..game,
+    stones: list.fold(points, game.stones, fn(stones, point) {
+      dict.delete(stones, point)
+    }),
+  )
 }
 
 fn add_score(
@@ -208,8 +246,8 @@ fn empty_region(
   game: Game,
   queue: List(Point),
   visited: Set(Point),
-  borders: Set(String),
-) -> #(Set(Point), Set(String)) {
+  borders: Set(Player),
+) -> #(Set(Point), Set(Player)) {
   case queue {
     [] -> #(visited, borders)
     [point, ..rest] ->
@@ -218,12 +256,7 @@ fn empty_region(
         False ->
           case dict.get(game.stones, point) {
             Ok(player) ->
-              empty_region(
-                game,
-                rest,
-                visited,
-                set.insert(borders, player.username),
-              )
+              empty_region(game, rest, visited, set.insert(borders, player))
             Error(_) ->
               empty_region(
                 game,
