@@ -54,9 +54,24 @@ server legality/cooldown checks still apply. A pass or rejected move waits
 for a changed position before trying again. Multiplayer is an approximation, not
 a multiplayer-trained model.
 
-Outside the image, bots are unavailable unless the bundled files are installed
-at `/opt/katago`; human-only development works without KataGo. Engine/model/visit
-settings are deliberately fixed for now.
+For local development with bots, install the bundled engine and network from
+an **existing local image**, without rebuilding or starting it:
+
+```sh
+mise run katago:install
+mise run dev
+```
+
+The installer defaults to `localhost/rtgo:latest`; use
+`KATAGO_IMAGE=your-existing-image mise run katago:install` for another tag. It
+verifies the network checksum and installs the executable, compressed network,
+config, and license into `/opt/katago`, requesting sudo only if needed. It creates
+and removes a temporary stopped container, not a running server. The image must
+match your host's architecture and have a compatible Linux runtime. Restart an
+already-running development server after installation to enable bots.
+
+Human-only development works without KataGo. Engine/model/visit settings are
+deliberately fixed for now.
 
 ## Develop
 

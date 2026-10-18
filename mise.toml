@@ -7,6 +7,9 @@ DEBUG_LEVEL = "DEBUG"
 run = 'podman build -t docker.io/tasuki/pi-rtgo:latest -f Containerfile.dev .'
 [tasks.image]
 run = 'podman build -t localhost/rtgo:latest -f Containerfile .'
+[tasks."katago:install"]
+description = "Install KataGo and its network from an existing local RTGO image into /opt/katago"
+run = "bash scripts/install-katago.sh"
 [tasks."client-config"]
 dir = "client"
 run = "cp config.${APP_ENV}.gleam src/config.gleam"
@@ -45,8 +48,10 @@ run = "gleam test"
 [tasks."test:drag-input"]
 dir = "client"
 run = "node --test test/drag_ffi_test.mjs"
+[tasks."test:katago-install"]
+run = "bash scripts/test-install-katago.sh"
 [tasks.test]
-depends = ["test:shared", "test:server", "test:client", "test:drag-input"]
+depends = ["test:shared", "test:server", "test:client", "test:drag-input", "test:katago-install"]
 
 [tasks."test:single-view"]
 description = "Test production scoring over 20 fresh-engine KataGo trials"
