@@ -33,6 +33,8 @@ RTEND[14000]RTSCORING[unassisted]RTSCORE[p1:1][p2:1][p3:1]
 - Colors are RTGO's canonical names: `black`, `white`, `cyan`, `green`, `orange`,
   `pink`, `purple`, `blue`.
 - Cooldowns are positive integer **milliseconds**, including per-player handicaps.
+  They apply before the first move as well as after each successful placement;
+  move timestamps are measured from game start, including that opening wait.
 - `RTEND[ms]`: optional elapsed time when everyone passed. Absent means an
   unfinished recording, not a draw. Automatic passing isn't a move; we do not
   invent alternating turns or insert synthetic passes.

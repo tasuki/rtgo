@@ -29,8 +29,10 @@ pub fn browser_move_lifecycle_is_authenticated_and_authoritative_test() {
     auth_api.register_request(url, "outsider")
     |> send
     |> read_json(auth.log_in_response_decoder)
+  let settings =
+    game.Settings(..game.default_settings, time_settings: game.Cooldown(1))
   let lobby_api.CreateGameResponse(id) =
-    lobby_api.create_game_request(url, host, game.default_settings)
+    lobby_api.create_game_request(url, host, settings)
     |> send
     |> read_json(lobby_api.create_game_response_decoder)
 
@@ -43,6 +45,19 @@ pub fn browser_move_lifecycle_is_authenticated_and_authoritative_test() {
   should.equal(send(play_api.move_request(url, id, host, #(0, 0))).status, 409)
   should.equal(send(lobby_api.join_game_request(url, id, guest)).status, 200)
   should.equal(send(lobby_api.start_game_request(url, id, host)).status, 200)
+  let opening =
+    play_api.state_request(url, id) |> send |> read_json(play_api.state_decoder)
+  should.equal(opening.revision, 0)
+  should.equal(dict.is_empty(opening.board.stones), True)
+  should.equal(
+    list.all(opening.players, fn(status) {
+      status.cooldown_ms > 0
+      && status.cooldown_ms <= 1000
+      && status.pass_in_ms == status.cooldown_ms + 10_000
+    }),
+    True,
+  )
+  should.equal(send(play_api.move_request(url, id, host, #(0, 0))).status, 409)
 
   list.each(["", "invalid"], fn(jwt) {
     should.equal(send(play_api.move_request(url, id, jwt, #(0, 0))).status, 401)
@@ -51,6 +66,8 @@ pub fn browser_move_lifecycle_is_authenticated_and_authoritative_test() {
     send(play_api.move_request(url, id, outsider, #(0, 0))).status,
     403,
   )
+  let assert Ok(lobby.Running(subject:, ..)) = lobby.get_game(rooms, id)
+  test_support.wait_until_ready(subject, "host")
   should.equal(send(play_api.move_request(url, id, host, #(-1, 0))).status, 409)
   should.equal(send(play_api.move_request(url, id, host, #(19, 0))).status, 409)
   let malformed =

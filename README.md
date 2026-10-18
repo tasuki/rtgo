@@ -71,7 +71,9 @@ multiplayer (up to eight colors) game. Pick a 9×9, 13×13 or 19×19 board and a
 its `/play/...` URL so other browser profiles or private windows can join. The
 host can start once at least two players have joined. Click or tap an empty
 intersection to play; keyboard users can focus a point and press Enter or Space.
-Everyone starts ready and can move independently (there are no alternating turns).
+Everyone starts on their full configured cooldown, including handicaps, and can
+queue an opening premove during it. Once ready, players can move independently
+(there are no alternating turns).
 The server serializes moves, applies captures and positional superko, and enforces
 each player's cooldown. Rejected moves do not consume a cooldown. Boards refresh
 every 250ms; spectators can watch but cannot move.
@@ -124,9 +126,10 @@ Kicking and editing cooldowns are only allowed before start.
 ### Automatic passing and scoring
 
 There is no Pass button. A player is **passing** after 10 seconds of being ready
-without making a successful move. Initially everyone has a 10-second opening
-window. After a move, that player's pass deadline is their cooldown **plus 10
-seconds**, so a long cooldown cannot end the game before they can move again.
+without making a successful move. The opening pass deadline is each player's
+initial cooldown **plus 10 seconds**. After a move, that player's pass deadline
+is again their cooldown **plus 10 seconds**, so a long cooldown cannot end the
+game before they can move.
 A passing player may resume while anyone else is still active. The server ends
 the game permanently once everyone is passing, even if browsers disconnect.
 Invalid moves, polling and reconnecting do not reset these deadlines. The board

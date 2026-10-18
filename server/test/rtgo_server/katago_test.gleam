@@ -208,19 +208,27 @@ pub fn bot_waits_for_cooldown_and_new_positions_after_passing_test() {
     ])
   let state =
     game.new_state(players, shared_game.default_settings, dict.new(), 0)
-  let snapshot = game.snapshot_at(state, 0)
+  let ready = shared_game.base_cooldown(state.settings) * 1000
+  should.equal(bot.should_think(game.snapshot_at(state, 0), "bot", None), False)
+  should.equal(
+    bot.should_think(game.snapshot_at(state, ready - 1), "bot", None),
+    False,
+  )
+  let snapshot = game.snapshot_at(state, ready)
   should.equal(bot.should_think(snapshot, "bot", None), True)
   should.equal(bot.should_think(snapshot, "unknown", None), False)
   should.equal(
     bot.should_think(snapshot, "bot", Some(snapshot.board.stones)),
     False,
   )
-  let assert Ok(moved) = game.play_at(state, "bot", #(0, 0), 0)
-  should.equal(bot.should_think(game.snapshot_at(moved, 1), "bot", None), False)
-  let ready = shared_game.base_cooldown(state.settings) * 1000
+  let assert Ok(moved) = game.play_at(state, "bot", #(0, 0), ready)
+  should.equal(
+    bot.should_think(game.snapshot_at(moved, ready + 1), "bot", None),
+    False,
+  )
   should.equal(
     bot.should_think(
-      game.snapshot_at(moved, ready),
+      game.snapshot_at(moved, ready * 2),
       "bot",
       Some(snapshot.board.stones),
     ),
@@ -228,7 +236,7 @@ pub fn bot_waits_for_cooldown_and_new_positions_after_passing_test() {
   )
   should.equal(
     bot.should_think(
-      game.snapshot_at(moved, ready + game.pass_grace_ms),
+      game.snapshot_at(moved, ready * 2 + game.pass_grace_ms),
       "bot",
       None,
     ),

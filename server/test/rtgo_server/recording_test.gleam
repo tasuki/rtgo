@@ -45,18 +45,23 @@ fn state() -> game.State {
 
 pub fn game_records_only_accepted_moves_with_elapsed_times_and_handicaps_test() {
   let initial = state()
-  let assert Ok(a) = game.play_at(initial, "Alice", #(0, 0), 600)
-  should.equal(game.play_at(a, "Alice", #(1, 0), 601), Error(game.CoolingDown))
-  let assert Error(_) = game.play_at(a, "Bob", #(0, 0), 700)
-  let assert Ok(b) = game.play_at(a, "Bob", #(1, 0), 800)
+  should.equal(
+    game.play_at(initial, "Alice", #(0, 0), 600),
+    Error(game.CoolingDown),
+  )
+  should.equal(initial.record.moves, [])
+  let assert Ok(a) = game.play_at(initial, "Alice", #(0, 0), 1600)
+  should.equal(game.play_at(a, "Alice", #(1, 0), 1601), Error(game.CoolingDown))
+  let assert Error(_) = game.play_at(a, "Bob", #(0, 0), 2600)
+  let assert Ok(b) = game.play_at(a, "Bob", #(1, 0), 2700)
   should.equal(list.length(b.record.moves), 2)
-  should.equal(list.map(b.record.moves, fn(m) { m.at_ms }), [300, 100])
+  should.equal(list.map(b.record.moves, fn(m) { m.at_ms }), [2200, 1100])
   let assert Ok(bob) =
     list.find(b.record.seats, fn(s) { s.player.username == "Bob" })
   should.equal(bob.cooldown_ms, 2000)
   let ended = game.advance(b, 30_000)
-  // Bob is ready at 2800; the last pass occurs at 12800, not the poll time.
-  should.equal(ended.record.finished_at, Some(12_300))
+  // Bob is ready at 4700; the last pass occurs at 14700, not the poll time.
+  should.equal(ended.record.finished_at, Some(14_200))
   let scored = game.finish_scoring(ended, Error(Nil))
   should.equal(scored.record.scoring, "unassisted")
   should.equal(dict.get(scored.record.scores, "Carol"), Ok(0))
@@ -152,10 +157,18 @@ pub fn live_download_has_the_latest_move_without_waiting_for_disk_test() {
   let users = players.start(test_support.test_sign_key())
   let rooms = lobby.start()
   let assert Ok(id) =
-    lobby.create_game(rooms, "Alice", settings.default_settings)
+    lobby.create_game(
+      rooms,
+      "Alice",
+      settings.Settings(
+        ..settings.default_settings,
+        time_settings: settings.Cooldown(1),
+      ),
+    )
   let assert Ok(_) = lobby.join_game(rooms, id, "Bob")
   let assert Ok(_) = lobby.start_game(rooms, id, "Alice")
   let assert Ok(lobby.Running(subject:, ..)) = lobby.get_game(rooms, id)
+  test_support.wait_until_ready(subject, "Alice")
   let assert Ok(_) = game.play(subject, "Alice", #(3, 3))
   let assert Ok(req) = request.to("https://rtgo.test/games/" <> id <> "/sgf")
   let download = test_support.send(req, users, rooms)

@@ -80,6 +80,36 @@ fn loaded(model: app.Model, state: play_api.State) -> app.Model {
   step(model, app.BoardLoaded(model.page_version, Ok(state)))
 }
 
+pub fn opening_cooldown_shows_a_full_timer_and_queues_the_first_move_test() {
+  let initial = cooling()
+  let assert Some(state) = initial.live
+  let assert [alice, bob] = state.players
+  let opening =
+    app.Model(
+      ..initial,
+      live: Some(
+        play_api.State(..state, revision: 0, players: [
+          alice,
+          play_api.PlayerStatus(..bob, cooldown_ms: 2000, pass_in_ms: 12_000),
+        ]),
+      ),
+    )
+  let html = opening |> app.view |> element.to_string
+  should.equal(string.contains(html, "countdown-bars"), True)
+  should.equal(string.contains(html, "--remaining:100%"), True)
+  let queued = step(opening, app.PlayPoint(#(1, 1)))
+  should.equal(queued.premove, Some(#(1, 1)))
+  should.equal(queued.pending_action, False)
+  let assert Some(state) = queued.live
+  let cooling = loaded(queued, state)
+  should.equal(cooling.premove, Some(#(1, 1)))
+  should.equal(cooling.pending_action, False)
+  let sent = loaded(cooling, ready(cooling))
+  should.equal(sent.premove, None)
+  should.equal(sent.pending_action, True)
+  should.equal(dict.is_empty(sent.game.stones), True)
+}
+
 pub fn one_premove_is_replaceable_until_the_latest_point_is_sent_test() {
   let initial = cooling()
   let queued = step(initial, app.PlayPoint(#(1, 1)))

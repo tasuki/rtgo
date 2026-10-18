@@ -2,7 +2,8 @@
 
 > Never lose on time again.
 
-After playing a move, get a cooldown period, then play another move.
+Start with a cooldown period. After playing a move, get another cooldown period,
+then play another move.
 
 Two players? Sure! Five players, why not?
 

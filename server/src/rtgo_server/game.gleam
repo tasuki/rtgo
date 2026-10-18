@@ -70,6 +70,18 @@ fn now_ms() -> Int {
   monotonic_time(atom.create("millisecond"))
 }
 
+fn cooldown_ms(
+  cooldowns: Dict(String, Int),
+  settings: shared_game.Settings,
+  name: String,
+) -> Int {
+  {
+    dict.get(cooldowns, name)
+    |> result.unwrap(shared_game.base_cooldown(settings))
+  }
+  * 1000
+}
+
 pub fn new_state(
   players: Dict(String, player.Player),
   settings: shared_game.Settings,
@@ -81,7 +93,9 @@ pub fn new_state(
     go.new_game(settings.board_size),
     settings,
     cooldowns,
-    dict.map_values(players, fn(_, _) { now }),
+    dict.map_values(players, fn(name, _) {
+      now + cooldown_ms(cooldowns, settings, name)
+    }),
     shared_game.Started,
     0,
     play_api.NotScored,
@@ -98,11 +112,7 @@ pub fn new_state(
           sgf.Seat(
             "p" <> int.to_string(i + 1),
             p,
-            {
-              dict.get(cooldowns, p.username)
-              |> result.unwrap(shared_game.base_cooldown(settings))
-            }
-              * 1000,
+            cooldown_ms(cooldowns, settings, p.username),
           )
         }),
     ),
@@ -156,16 +166,17 @@ pub fn play_at(
           use board <- result.try(
             go.play(state.board, p, point) |> result.map_error(InvalidMove),
           )
-          let seconds =
-            dict.get(state.cooldowns, name)
-            |> result.unwrap(shared_game.base_cooldown(state.settings))
           let assert Ok(seat) =
             list.find(state.record.seats, fn(s) { s.player.username == name })
           Ok(
             State(
               ..state,
               board: board,
-              ready_at: dict.insert(state.ready_at, name, now + seconds * 1000),
+              ready_at: dict.insert(
+                state.ready_at,
+                name,
+                now + cooldown_ms(state.cooldowns, state.settings, name),
+              ),
               revision: state.revision + 1,
               record: sgf.Record(..state.record, moves: [
                 sgf.Move(seat.id, point, now - state.started_at),

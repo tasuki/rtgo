@@ -6,6 +6,7 @@ import gleam/http/response
 import gleam/json
 import gleam/list
 import gleeunit/should
+import rtgo_server/game
 import rtgo_server/lobby
 import rtgo_server/players
 import rtgo_server/router
@@ -18,6 +19,18 @@ pub fn test_sign_key() {
       "integration-test-sign-key-0123456789abcdef",
     ))
   key
+}
+
+/// Live-actor tests wait for the advertised opening cooldown. Exact timing
+/// boundaries are covered by the pure game_timing tests without sleeping.
+pub fn wait_until_ready(
+  subject: process.Subject(game.Message),
+  name: String,
+) -> Nil {
+  let assert Ok(status) =
+    game.get_game(subject).live.players
+    |> list.find(fn(status) { status.player.username == name })
+  process.sleep(status.cooldown_ms)
 }
 
 /// Exercise the same request builders and response decoders as the browser.

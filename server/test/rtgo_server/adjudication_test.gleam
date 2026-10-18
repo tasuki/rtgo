@@ -255,12 +255,12 @@ pub fn final_position() -> game.State {
       dict.new(),
       0,
     )
-  game.advance(game.State(..state, board: board), 10_000)
+  game.advance(game.State(..state, board: board), 11_000)
 }
 
 pub fn adjudication_scores_a_copy_and_leaves_final_board_and_history_intact_test() {
   let pending = final_position()
-  let live = game.snapshot_at(pending, 10_000).live
+  let live = game.snapshot_at(pending, 11_000).live
   should.equal(live.finished, True)
   should.equal(live.scoring, play_api.Scoring)
   should.equal(live.scores, dict.new())
@@ -273,7 +273,7 @@ pub fn adjudication_scores_a_copy_and_leaves_final_board_and_history_intact_test
   should.equal(dict.get(scored.scores, "white"), Error(Nil))
   should.equal(scored.revision, pending.revision + 1)
   should.equal(
-    game.play_at(scored, "white", #(0, 0), 10_001),
+    game.play_at(scored, "white", #(0, 0), 11_001),
     Error(game.GameFinished),
   )
   // Duplicate replies or the deadline firing after success cannot change it.
