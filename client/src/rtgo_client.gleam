@@ -1464,6 +1464,17 @@ fn settings_summary(settings: shared_game.Settings) -> String {
   }
 }
 
+fn create_game_field(
+  id: String,
+  label: String,
+  controls: List(Element(Msg)),
+) -> Element(Msg) {
+  html.div([attribute.class("create-game-field")], [
+    html.label([attribute.for(id)], [html.text(label)]),
+    html.div([attribute.class("create-game-control")], controls),
+  ])
+}
+
 fn view_create_form(model: Model) -> Element(Msg) {
   html.form(
     [
@@ -1472,140 +1483,156 @@ fn view_create_form(model: Model) -> Element(Msg) {
     ],
     [
       html.h2([], [html.text("Create game")]),
-      html.label([attribute.for("game-type")], [html.text("Game type")]),
-      html.select(
-        [
-          attribute.id("game-type"),
-          attribute.disabled(model.pending_action),
-          event.on_change(GameTypeChanged),
-        ],
-        [
-          html.option(
-            [
-              attribute.value("two_player"),
-              attribute.selected(
-                model.create_game_type == shared_game.TwoPlayerGame,
-              ),
-            ],
-            "Two-player (black and white)",
-          ),
-          html.option(
-            [
-              attribute.value("multiplayer"),
-              attribute.selected(
-                model.create_game_type == shared_game.MultiplayerGame,
-              ),
-            ],
-            "Multiplayer (up to 8 players)",
-          ),
-        ],
-      ),
-      html.label([attribute.for("board-size")], [html.text("Board size")]),
-      html.select(
-        [
-          attribute.id("board-size"),
-          attribute.disabled(model.pending_action),
-          event.on_change(BoardSizeChanged),
-        ],
-        list.map([9, 13, 19], fn(size) {
-          let text = int.to_string(size)
-          html.option(
-            [
-              attribute.value(text),
-              attribute.selected(size == model.create_board_size),
-            ],
-            text <> "×" <> text,
-          )
-        }),
-      ),
-      html.label([attribute.for("time-mode")], [html.text("Time system")]),
-      html.select(
-        [
-          attribute.id("time-mode"),
-          attribute.disabled(model.pending_action),
-          event.on_change(TimeModeChanged),
-        ],
-        list.map(
+      create_game_field("game-type", "Game type", [
+        html.select(
           [
-            #("crazy_cooldown", "Crazy Cooldown"),
-            #("cushy_cooldown", "Cushy Cooldown"),
-            #("stone_savings", "Stone Savings"),
-            #("simul_slaughter", "Simul Slaughter — coming later"),
-            #("drag_derby", "Drag Derby"),
+            attribute.id("game-type"),
+            attribute.disabled(model.pending_action),
+            event.on_change(GameTypeChanged),
           ],
-          fn(entry) {
+          [
             html.option(
               [
-                attribute.value(entry.0),
-                attribute.selected(model.create_timing == entry.0),
-                attribute.disabled(entry.0 == "simul_slaughter"),
+                attribute.value("two_player"),
+                attribute.selected(
+                  model.create_game_type == shared_game.TwoPlayerGame,
+                ),
               ],
-              entry.1,
-            )
-          },
+              "Two-player (black and white)",
+            ),
+            html.option(
+              [
+                attribute.value("multiplayer"),
+                attribute.selected(
+                  model.create_game_type == shared_game.MultiplayerGame,
+                ),
+              ],
+              "Multiplayer (up to 8 players)",
+            ),
+          ],
         ),
-      ),
-      html.p([], [
-        html.text(case model.create_timing {
-          "cushy_cooldown" ->
-            "Ready time credits up to 25% of your next cooldown. No banked stones."
-          "stone_savings" ->
-            "Bank stones: each additional stored stone takes longer to earn (1×, 2×, 3×…). Pass explicitly; saving will not auto-pass."
-          "drag_derby" ->
-            "No cooldown. Click and drag to paint the board with placement attempts."
-          _ ->
-            "One stone, then your full cooldown. Everyone starts cooling down."
-        }),
       ]),
-      html.label([attribute.for("cooldown")], [
-        html.text(case model.create_timing {
+      create_game_field("board-size", "Board size", [
+        html.select(
+          [
+            attribute.id("board-size"),
+            attribute.disabled(model.pending_action),
+            event.on_change(BoardSizeChanged),
+          ],
+          list.map([9, 13, 19], fn(size) {
+            let text = int.to_string(size)
+            html.option(
+              [
+                attribute.value(text),
+                attribute.selected(size == model.create_board_size),
+              ],
+              text <> "×" <> text,
+            )
+          }),
+        ),
+      ]),
+      create_game_field("time-mode", "Time system", [
+        html.select(
+          [
+            attribute.id("time-mode"),
+            attribute.attribute("aria-describedby", "time-mode-help"),
+            attribute.disabled(model.pending_action),
+            event.on_change(TimeModeChanged),
+          ],
+          list.map(
+            [
+              #("crazy_cooldown", "Crazy Cooldown"),
+              #("cushy_cooldown", "Cushy Cooldown"),
+              #("stone_savings", "Stone Savings"),
+              #("simul_slaughter", "Simul Slaughter — coming later"),
+              #("drag_derby", "Drag Derby"),
+            ],
+            fn(entry) {
+              html.option(
+                [
+                  attribute.value(entry.0),
+                  attribute.selected(model.create_timing == entry.0),
+                  attribute.disabled(entry.0 == "simul_slaughter"),
+                ],
+                entry.1,
+              )
+            },
+          ),
+        ),
+        html.p(
+          [
+            attribute.id("time-mode-help"),
+            attribute.class("create-game-help"),
+          ],
+          [
+            html.text(case model.create_timing {
+              "cushy_cooldown" ->
+                "Ready time credits up to 25% of your next cooldown. No banked stones."
+              "stone_savings" ->
+                "Bank stones: each additional stored stone takes longer to earn (1×, 2×, 3×…). Pass explicitly; saving will not auto-pass."
+              "drag_derby" ->
+                "No cooldown. Click and drag to paint the board with placement attempts."
+              _ ->
+                "One stone, then your full cooldown. Everyone starts cooling down."
+            }),
+          ],
+        ),
+      ]),
+      create_game_field(
+        "cooldown",
+        case model.create_timing {
           "stone_savings" -> "Base recharge interval (seconds)"
           _ -> "Cooldown (seconds)"
-        }),
-      ]),
-      html.input([
-        attribute.id("cooldown"),
-        attribute.type_("number"),
-        attribute.min("1"),
-        attribute.max("60"),
-        attribute.required(True),
-        attribute.value(model.create_cooldown),
-        attribute.disabled(
-          model.pending_action || model.create_timing == "drag_derby",
-        ),
-        event.on_input(CooldownChanged),
-      ]),
+        },
+        [
+          html.input([
+            attribute.id("cooldown"),
+            attribute.type_("number"),
+            attribute.min("1"),
+            attribute.max("60"),
+            attribute.required(True),
+            attribute.value(model.create_cooldown),
+            attribute.disabled(
+              model.pending_action || model.create_timing == "drag_derby",
+            ),
+            event.on_input(CooldownChanged),
+          ]),
+        ],
+      ),
       case model.create_timing {
         "stone_savings" ->
-          html.div([], [
-            html.label([attribute.for("savings-cap")], [
-              html.text("Maximum saved stones"),
+          html.div([attribute.class("create-game-savings")], [
+            create_game_field("savings-cap", "Maximum saved stones", [
+              html.input([
+                attribute.id("savings-cap"),
+                attribute.type_("number"),
+                attribute.min("1"),
+                attribute.max("20"),
+                attribute.required(True),
+                attribute.value(model.create_reserve),
+                attribute.disabled(model.pending_action),
+                event.on_input(SavingsCapChanged),
+              ]),
             ]),
-            html.input([
-              attribute.id("savings-cap"),
-              attribute.type_("number"),
-              attribute.min("1"),
-              attribute.max("20"),
-              attribute.required(True),
-              attribute.value(model.create_reserve),
-              attribute.disabled(model.pending_action),
-              event.on_input(SavingsCapChanged),
-            ]),
-            html.label([attribute.for("savings-gap")], [
-              html.text("Minimum placement gap (milliseconds)"),
-            ]),
-            html.input([
-              attribute.id("savings-gap"),
-              attribute.type_("number"),
-              attribute.min("0"),
-              attribute.max(int.to_string(
-                { int.parse(model.create_cooldown) |> result.unwrap(5) } * 1000,
-              )),
-              attribute.required(True),
-              attribute.value(model.create_gap),
-              attribute.disabled(model.pending_action),
-              event.on_input(SavingsGapChanged),
-            ]),
+            create_game_field(
+              "savings-gap",
+              "Minimum placement gap (milliseconds)",
+              [
+                html.input([
+                  attribute.id("savings-gap"),
+                  attribute.type_("number"),
+                  attribute.min("0"),
+                  attribute.max(int.to_string(
+                    { int.parse(model.create_cooldown) |> result.unwrap(5) }
+                    * 1000,
+                  )),
+                  attribute.required(True),
+                  attribute.value(model.create_gap),
+                  attribute.disabled(model.pending_action),
+                  event.on_input(SavingsGapChanged),
+                ]),
+              ],
+            ),
           ])
         _ -> html.text("")
       },
