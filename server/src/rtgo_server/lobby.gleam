@@ -68,7 +68,7 @@ pub type Message {
     reply: Subject(Result(String, Error)),
   )
   AddBot(id: String, host: String, reply: Subject(Result(Nil, Error)))
-  ListGames(reply: Subject(Dict(String, Metadata)))
+  ListGames(reply: Subject(Dict(String, Entry)))
   GetGame(id: String, reply: Subject(Result(Entry, Error)))
   JoinGame(
     id: String,
@@ -151,12 +151,8 @@ fn metadata(entry: Entry) -> Metadata {
       )
     }
     Running(subject:, settings:, ..) -> {
-      let game.Snapshot(players:, phase:, ..) = game.get_game(subject)
-      Metadata(
-        phase: phase,
-        player_count: dict.size(players),
-        settings: settings,
-      )
+      let game.Metadata(phase:, player_count:) = game.get_metadata(subject)
+      Metadata(phase: phase, player_count: player_count, settings: settings)
     }
   }
 }
@@ -532,7 +528,9 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
     AddBot(id, host, reply) ->
       finish_change(state, reply, add_bot_to_room(state, id, host))
     ListGames(reply) -> {
-      process.send(reply, list_metadata(state.games))
+      // Return only room entries here. Game queries run in the caller so a busy
+      // game cannot block joins, room lookups, or other lobby-list requests.
+      process.send(reply, state.games)
       actor.continue(state)
     }
     JoinGame(id, name, preferred, reply) ->
@@ -595,7 +593,8 @@ pub fn get_game(subject: Subject(Message), id: String) -> Result(Entry, Error) {
 }
 
 pub fn list_games(subject: Subject(Message)) -> Dict(String, Metadata) {
-  process.call(subject, 100, fn(client) { ListGames(client) })
+  process.call(subject, 100, ListGames)
+  |> list_metadata
 }
 
 pub fn join_game(

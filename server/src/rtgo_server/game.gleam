@@ -6,6 +6,7 @@ import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
+import gleam/set
 import gleam/string
 import rtgo_server/adjudication
 import rtgo_server/recorder
@@ -41,6 +42,8 @@ pub type State {
   )
 }
 
+/// Read-only position/status. Superko history stays in the authoritative actor,
+/// never in polling responses or bot snapshots. Submit moves for rule checking.
 pub type Snapshot {
   Snapshot(
     players: Dict(String, player.Player),
@@ -50,6 +53,11 @@ pub type Snapshot {
     phase: shared_game.GamePhase,
     live: play_api.State,
   )
+}
+
+/// Lobby listings need only these scalars, not positions or player records.
+pub type Metadata {
+  Metadata(phase: shared_game.GamePhase, player_count: Int)
 }
 
 pub type Error {
@@ -63,6 +71,7 @@ pub type Message {
   Play(player: String, move: go.Point, reply: Subject(Result(Nil, Error)))
   Pass(player: String, reply: Subject(Result(Nil, Error)))
   GetGame(reply: Subject(Snapshot))
+  GetMetadata(reply: Subject(Metadata))
   GetRecord(reply: Subject(sgf.Record))
   Tick(Subject(Message))
   Scored(Result(List(go.Point), Nil))
@@ -309,6 +318,9 @@ pub fn play_at(
 
 pub fn snapshot_at(state: State, now: Int) -> Snapshot {
   let state = advance(state, now)
+  // Erlang copies message terms. Dropping history before sending avoids copying
+  // every previous position on each HTTP poll, bot check, and room lookup.
+  let board = go.Game(..state.board, history: set.new())
   let statuses =
     state.players
     |> dict.values
@@ -346,12 +358,12 @@ pub fn snapshot_at(state: State, now: Int) -> Snapshot {
   let finished = state.phase == shared_game.Finished
   Snapshot(
     state.players,
-    state.board,
+    board,
     state.settings,
     state.cooldowns,
     state.phase,
     play_api.State(
-      state.board,
+      board,
       statuses,
       finished,
       state.revision,
@@ -446,6 +458,10 @@ fn handle_message(
       }
     GetGame(reply) -> {
       process.send(reply, snapshot_at(state, now))
+      actor.continue(state)
+    }
+    GetMetadata(reply) -> {
+      process.send(reply, Metadata(state.phase, dict.size(state.players)))
       actor.continue(state)
     }
     GetRecord(reply) -> {
@@ -545,6 +561,10 @@ pub fn pass(
 
 pub fn get_game(subject: Subject(Message)) -> Snapshot {
   process.call(subject, 1000, fn(reply) { GetGame(reply) })
+}
+
+pub fn get_metadata(subject: Subject(Message)) -> Metadata {
+  process.call(subject, 1000, GetMetadata)
 }
 
 pub fn get_record(subject: Subject(Message)) -> sgf.Record {

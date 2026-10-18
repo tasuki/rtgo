@@ -62,7 +62,7 @@ fn run(
           }
         }
       }
-      // Don't retain the snapshot's complete superko history while sleeping.
+      // Keep only the last stone position while sleeping, not the snapshot.
       wait(subject, name, last)
     }
   }
