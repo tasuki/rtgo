@@ -67,15 +67,28 @@ mise run dev
 ## Try the lobby
 
 Choose a name and preferred color, then create a two-player (black/white) or
-multiplayer (up to eight colors) game. Pick a 9×9, 13×13 or 19×19 board and a 1–60 second cooldown. Share
+multiplayer (up to eight colors) game. Pick a 9×9, 13×13 or 19×19 board and a
+time system:
+
+- **Crazy Cooldown:** full cooldown after every stone (the default).
+- **Cushy Cooldown:** ready-time credit forgives up to 25% of the next cooldown.
+- **Stone Savings:** bank stones; additional stored stones take 1×, 2×, 3×… the
+  base interval to earn. Configure the reserve cap and minimum placement gap.
+- **Simul Slaughter:** deferred; shown disabled in the picker.
+- **Drag Derby:** no cooldown. Click and drag to send placements immediately,
+  including intersections crossed between pointer events. Mouse, touch, and pen
+  gestures are supported; normal Go legality still applies.
+
+Cooldown/base recharge intervals range from 1–60 seconds. See
+[time systems](docs/time-systems.md) for precise rules and tuning defaults. Share
 its `/play/...` URL so other browser profiles or private windows can join. The
 host can start once at least two players have joined. Click or tap an empty
 intersection to play; keyboard users can focus a point and press Enter or Space.
-Everyone starts on their full configured cooldown, including handicaps, and can
-queue an opening premove during it. Once ready, players can move independently
-(there are no alternating turns).
+Cooldown modes start on each player's full configured cooldown, including
+handicaps, and allow opening premoves. Stone Savings starts empty; Drag Derby is
+ready immediately. Once ready, players move independently (no alternating turns).
 The server serializes moves, applies captures and positional superko, and enforces
-each player's cooldown. Rejected moves do not consume a cooldown. Boards refresh
+each mode's timing and resources. Rejected moves spend nothing. Boards refresh
 every 250ms; spectators can watch but cannot move.
 
 Choose colors from the always-visible stones on a board background; a ring marks
@@ -117,23 +130,30 @@ rejoining the room) and edit the cooldown for any player, including themselves.
 Cooldown edits save when the field loses focus or Enter is pressed; there is no
 separate save button. Invalid or failed edits stay visible with an error, and a
 start/kick/cancel click waits for an in-progress save rather than discarding it.
-A player's cooldown may range from the game's base cooldown up to 3600 seconds;
-setting it back to the base removes the handicap. Longer waits handicap stronger
+A player's cooldown/base recharge interval may range from the game's base
+interval up to 3600 seconds; setting it back to the base removes the handicap.
+Drag Derby has no timing handicaps. Longer waits handicap stronger
 players, rather than giving a move deadline. Everyone can see these settings,
 and leaving/rejoining does not reset them. They are enforced when the game starts.
 Kicking and editing cooldowns are only allowed before start.
 
-### Automatic passing and scoring
+### Passing and scoring
 
-There is no Pass button. A player is **passing** after 10 seconds of being ready
-without making a successful move. The opening pass deadline is each player's
-initial cooldown **plus 10 seconds**. After a move, that player's pass deadline
-is again their cooldown **plus 10 seconds**, so a long cooldown cannot end the
-game before they can move.
-A passing player may resume while anyone else is still active. The server ends
-the game permanently once everyone is passing, even if browsers disconnect.
-Invalid moves, polling and reconnecting do not reset these deadlines. The board
-shows each player's readiness/pass countdown and the time until everyone passes.
+Use **Pass** in your player, game-info, or passing menu panel. Passing is only
+accepted when ready, including opening waits and minimum placement gaps. It does
+not reset timing or spend/grant credits. A passing player may resume with a legal
+move while anyone else is still active; that move still obeys the timing rules.
+Repeated passes and rejected moves cannot refresh the timing window. Everyone
+passing ends the game permanently.
+
+Crazy Cooldown, Cushy Cooldown, and Drag Derby also automatically pass a player
+after ten seconds of readiness without a successful placement. Opening cooldowns
+and subsequent waits finish before that timeout starts. Invalid moves, polling,
+and reconnecting do not reset it. **Stone Savings uses explicit passing only**,
+so intentional saving cannot end the game. Consequently a disconnected banking
+player does not automatically pass; disconnect handling is not implemented yet.
+Player panels display readiness/pass status and, for Stone Savings, the saved
+stone count and time to the next credit.
 
 Final scoring uses **Chinese-like area scoring**: stones on the board plus empty
 regions bordered by exactly one player's stones. Captured stones give no separate
@@ -178,8 +198,8 @@ are in memory; SGF recordings persist separately.
 
 ### Recordings and replay
 
-Every started game is recorded, including multiplayer, handicaps, move timestamps,
-and final scoring/dead-stone annotations. The server saves an atomic SGF snapshot
+Every started game is recorded, including its timing mode and parameters,
+multiplayer, handicaps, move timestamps, and final scoring/dead-stone annotations. The server saves an atomic SGF snapshot
 at start, after accepted moves, when play ends, and after scoring. `SGF_DIR`
 selects the directory: `data/sgf` by default, `/data/sgf` in the image. Files and
 downloads are named `YYYY-MM-DD-<game-code>.sgf`, e.g. `2026-10-18-four.sgf`, using

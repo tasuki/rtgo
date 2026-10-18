@@ -20,6 +20,15 @@ RTEND[14000]RTSCORING[unassisted]RTSCORE[p1:1][p2:1][p3:1]
 ## Root node
 
 - `RTFORMAT[1]`: required extension version.
+- `RTTIMING[json]`: optional timing metadata, encoded as a single SGF-escaped JSON
+  value. Missing means legacy strict cooldown (Crazy Cooldown). Its object has
+  `mode` (`crazy_cooldown`, `cushy_cooldown`, `stone_savings`, or `drag_derby`)
+  and `gain_move_seconds` (the base interval, zero for Drag Derby). Stone Savings
+  additionally requires `max_moves` and `minimum_gap_ms`. Cushy Cooldown's credit
+  cap is fixed at 25% of each player's interval. Unknown modes and invalid
+  parameters are rejected, not silently treated as strict cooldown.
+  This additive metadata does not change the sequential move-node contract;
+  Simul Slaughter will require a separate, explicitly agreed recording design.
 - `DT[YYYY-MM-DD]`: the game's start date in **UTC**, also used in its filename.
   Date metadata does not affect move playback.
 - `SZ[n]`: square board size. Production creates 9, 13, or 19; the importer
@@ -32,12 +41,17 @@ RTEND[14000]RTSCORING[unassisted]RTSCORE[p1:1][p2:1][p3:1]
   unique IDs, names, and colors.
 - Colors are RTGO's canonical names: `black`, `white`, `cyan`, `green`, `orange`,
   `pink`, `purple`, `blue`.
-- Cooldowns are positive integer **milliseconds**, including per-player handicaps.
-  They apply before the first move as well as after each successful placement;
-  move timestamps are measured from game start, including that opening wait.
+- Cooldowns are integer **milliseconds**, including per-player handicaps.
+  They are positive for cooldown/banking modes and zero only for Drag Derby.
+  In Crazy Cooldown they apply before the first move and after each placement.
+  In Cushy Cooldown they describe the full interval before readiness credit; in
+  Stone Savings they describe the base recharge interval. Drag Derby has no
+  opening wait or timing handicap. Move timestamps are measured from game start,
+  including any opening wait.
 - `RTEND[ms]`: optional elapsed time when everyone passed. Absent means an
-  unfinished recording, not a draw. Automatic passing isn't a move; we do not
-  invent alternating turns or insert synthetic passes.
+  unfinished recording, not a draw. Neither explicit nor automatic passing is a
+  placement; we do not invent alternating turns or insert synthetic pass moves.
+  Intermediate pass/resume status is not replayed; the final end time is retained.
 - `RTSCORING[pending|estimated|unassisted]`: whether final scoring is available
   and whether KataGo estimated dead stones. `pending` also covers active games
   and games whose final scoring was interrupted.
@@ -83,7 +97,7 @@ downloads, even if play/scoring crosses midnight. Archive lookup accepts only
 this date-prefixed format; room/replay URLs still use just the game code.
 A per-game recorder process writes a complete snapshot to
 `YYYY-MM-DD-<room-id>.sgf.tmp`, then atomically renames it, at start,
-after each accepted move, at finish, and after scoring. Rejections and polls do
+after each accepted move or explicit pass, at finish, and after scoring. Rejections and polls do
 not add moves. Temporary files are not recordings. Write failures are logged;
 the previous complete snapshot remains usable. Writes are asynchronous, so an
 abrupt kill can lose the latest queued updates; this is not a synchronous WAL or
@@ -101,7 +115,8 @@ and account sessions are still in memory; recordings do not restore games.
   recordings, not arbitrary third-party Go SGFs, setup stones, variations, or
   collections. Unsupported/malformed input is rejected, not silently flattened.
 - The viewer has Start, Previous, Next, End, and a move slider; it displays the
-  move's player, coordinate, and timestamp, the roster/handicaps, and recorded
+  move's player, coordinate, and timestamp, the timing mode and parameters,
+  roster/handicaps, and recorded
   final scores. Empty and interrupted recordings are replayable too.
 
 The importer limits input to 1 MB and 10,000 moves, rejects duplicate properties,

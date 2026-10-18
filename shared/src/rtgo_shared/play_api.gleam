@@ -8,8 +8,15 @@ import gleam/uri
 import rtgo_shared/go
 import rtgo_shared/player
 
+/// cooldown_ms is the wait for the next placement (including bank/gap limits).
+/// pass_in_ms is zero while passing, positive until auto-pass, or -1 when only
+/// explicit passing applies. A pass never implies permission to bypass timing.
 pub type PlayerStatus {
   PlayerStatus(player: player.Player, cooldown_ms: Int, pass_in_ms: Int)
+}
+
+pub type SavingsStatus {
+  SavingsStatus(credits: Int, capacity: Int, recharge_ms: Int)
 }
 
 pub type ScoringStatus {
@@ -25,10 +32,12 @@ pub type State {
     players: List(PlayerStatus),
     finished: Bool,
     revision: Int,
+    // -1 if an active player has no automatic pass deadline.
     end_in_ms: Int,
     scores: Dict(String, Int),
     scoring: ScoringStatus,
     dead_stones: List(go.Point),
+    savings: Dict(String, SavingsStatus),
   )
 }
 
@@ -55,6 +64,18 @@ pub fn move_request(
       json.object([#("x", json.int(point.0)), #("y", json.int(point.1))]),
     ),
   )
+}
+
+pub fn pass_request(
+  server_url: String,
+  id: String,
+  jwt: String,
+) -> request.Request(String) {
+  let assert Ok(req) =
+    request.to(server_url <> "/games/" <> uri.percent_encode(id) <> "/pass")
+  req
+  |> request.set_method(Post)
+  |> request.set_header("authorization", "Bearer " <> jwt)
 }
 
 pub fn move_decoder() -> decode.Decoder(go.Point) {
@@ -104,6 +125,16 @@ pub fn state_to_json(state: State) -> json.Json {
         ])
       }),
     ),
+    #(
+      "savings",
+      json.dict(state.savings, fn(name) { name }, fn(bank) {
+        json.object([
+          #("credits", json.int(bank.credits)),
+          #("capacity", json.int(bank.capacity)),
+          #("recharge_ms", json.int(bank.recharge_ms)),
+        ])
+      }),
+    ),
     #("finished", json.bool(state.finished)),
     #("revision", json.int(state.revision)),
     #("end_in_ms", json.int(state.end_in_ms)),
@@ -145,6 +176,16 @@ pub fn state_decoder() -> decode.Decoder(State) {
       decode.success(PlayerStatus(p, cooldown, pass_in))
     }),
   )
+  use savings <- decode.optional_field(
+    "savings",
+    dict.new(),
+    decode.dict(decode.string, {
+      use credits <- decode.field("credits", decode.int)
+      use capacity <- decode.field("capacity", decode.int)
+      use recharge <- decode.field("recharge_ms", decode.int)
+      decode.success(SavingsStatus(credits, capacity, recharge))
+    }),
+  )
   use finished <- decode.field("finished", decode.bool)
   use revision <- decode.field("revision", decode.int)
   use end_in <- decode.field("end_in_ms", decode.int)
@@ -172,5 +213,6 @@ pub fn state_decoder() -> decode.Decoder(State) {
     scores,
     scoring,
     dead_stones,
+    savings,
   ))
 }

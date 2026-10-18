@@ -53,6 +53,7 @@ fn cooling() -> app.Model {
       dict.new(),
       play_api.NotScored,
       [],
+      dict.new(),
     )
   app.Model(
     ..app.initial_model(

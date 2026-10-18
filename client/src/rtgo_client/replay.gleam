@@ -8,6 +8,7 @@ import lustre/attribute
 import lustre/element/html
 import lustre/event
 import rtgo_client/board
+import rtgo_shared/game
 import rtgo_shared/go
 import rtgo_shared/player
 import rtgo_shared/sgf
@@ -171,6 +172,12 @@ pub fn view(model: Model, loading: Bool) {
             ),
           ]),
           controls(model, replay),
+          html.p([], [
+            html.text(case replay.record.time_settings {
+              Some(timing) -> game.timing_label(timing)
+              None -> "Crazy Cooldown"
+            }),
+          ]),
           html.ul(
             [attribute.class("live-players")],
             list.map(replay.record.seats, fn(seat) {
@@ -187,9 +194,20 @@ pub fn view(model: Model, loading: Bool) {
                 ),
                 html.strong([], [html.text(seat.player.username)]),
                 html.span([], [
-                  html.text(
-                    int.to_string(seat.cooldown_ms / 1000) <> "s cooldown",
-                  ),
+                  html.text(case replay.record.time_settings {
+                    Some(game.DragDerby) -> "Unlimited placements"
+                    Some(game.StoneSavings(_, cap, gap)) ->
+                      int.to_string(seat.cooldown_ms / 1000)
+                      <> "s base recharge · "
+                      <> int.to_string(cap)
+                      <> " stone reserve · "
+                      <> int.to_string(gap)
+                      <> "ms gap"
+                    Some(game.CushyCooldown(_)) ->
+                      int.to_string(seat.cooldown_ms / 1000)
+                      <> "s cooldown · up to 25% credit"
+                    _ -> int.to_string(seat.cooldown_ms / 1000) <> "s cooldown"
+                  }),
                 ]),
               ])
             }),

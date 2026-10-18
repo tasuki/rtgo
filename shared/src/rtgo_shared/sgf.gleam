@@ -1,11 +1,13 @@
 /// RTGO's versioned SGF extension. See docs/sgf.md for the on-disk contract.
 import gleam/dict.{type Dict}
 import gleam/int
+import gleam/json
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import gleam/result
 import gleam/set
 import gleam/string
+import rtgo_shared/game
 import rtgo_shared/go
 import rtgo_shared/player
 
@@ -28,6 +30,7 @@ pub type Record {
     scores: Dict(String, Int),
     dead: List(go.Point),
     date: Option(String),
+    time_settings: Option(game.TimeSettings),
   )
 }
 
@@ -40,7 +43,7 @@ pub type Replay {
 }
 
 pub fn new(size: Int, seats: List(Seat)) -> Record {
-  Record(size, seats, [], None, "pending", dict.new(), [], None)
+  Record(size, seats, [], None, "pending", dict.new(), [], None, None)
 }
 
 fn escape(value: String) -> String {
@@ -124,7 +127,13 @@ pub fn encode(record: Record) -> String {
     Some(date) -> "DT" <> value(date)
     None -> ""
   }
-  <> "RU[RTGO positional superko; no suicide; area; no komi]RTFORMAT[1]\nRTPLAYER"
+  <> "RU[RTGO positional superko; no suicide; area; no komi]RTFORMAT[1]"
+  <> case record.time_settings {
+    Some(timing) ->
+      "RTTIMING" <> value(json.to_string(game.timing_to_json(timing)))
+    None -> ""
+  }
+  <> "\nRTPLAYER"
   <> roster
   <> conventional
   <> ending
@@ -320,7 +329,7 @@ fn seat(raw: String) -> Result(Seat, String) {
       use cooldown <- result.try(number(cooldown))
       case
         id != ""
-        && cooldown > 0
+        && cooldown >= 0
         && list.all(string.to_graphemes(id), fn(c) {
           string.contains("abcdefghijklmnopqrstuvwxyz0123456789", c)
         })
@@ -370,6 +379,15 @@ pub fn decode(source: String) -> Result(Replay, String) {
       )
       use size <- result.try(one(root, "SZ") |> result.try(number))
       use seats <- result.try(get(root, "RTPLAYER") |> list.try_map(seat))
+      use timing <- result.try(case get(root, "RTTIMING") {
+        [] -> Ok(None)
+        _ -> {
+          use text <- result.try(one(root, "RTTIMING"))
+          json.parse(text, game.timing_decoder())
+          |> result.map(Some)
+          |> result.replace_error("Invalid timing metadata.")
+        }
+      })
       let unique = fn(items) {
         set.size(set.from_list(items)) == list.length(items)
       }
@@ -379,6 +397,12 @@ pub fn decode(source: String) -> Result(Replay, String) {
         && size <= 25
         && list.length(seats) >= 2
         && list.length(seats) <= 8
+        && list.all(seats, fn(s) {
+          case timing {
+            Some(game.DragDerby) -> s.cooldown_ms == 0
+            _ -> s.cooldown_ms > 0
+          }
+        })
         && unique(list.map(seats, fn(s) { s.id }))
         && unique(list.map(seats, fn(s) { s.player.username }))
         && unique(list.map(seats, fn(s) { player.color_name(s.player.color) }))
@@ -446,6 +470,7 @@ pub fn decode(source: String) -> Result(Replay, String) {
                   dict.from_list(scores),
                   dead,
                   date,
+                  timing,
                 )
               replay_nodes(
                 rest,

@@ -71,6 +71,7 @@ pub fn scoring_statuses_round_trip_test() {
           dict.new(),
           status,
           [],
+          dict.new(),
         )
       let assert Ok(decoded) =
         state
@@ -96,6 +97,7 @@ pub fn live_state_json_round_trip_test() {
       dict.new(),
       play_api.NotScored,
       [],
+      dict.new(),
     )
   let assert Ok(decoded) =
     state

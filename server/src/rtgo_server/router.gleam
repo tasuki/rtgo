@@ -52,6 +52,38 @@ fn game_details(id: String, entry: lobby.Entry) -> lobby_api.GameDetails {
   }
 }
 
+fn play_response(
+  subject: process.Subject(game.Message),
+  outcome: Result(Nil, game.Error),
+) -> Response {
+  case outcome {
+    Ok(Nil) ->
+      json_response_obj(
+        200,
+        play_api.state_to_json(game.get_game(subject).live),
+      )
+    Error(game.UnknownPlayer) ->
+      json_response(403, [
+        #("msg", json.string("Only players in this game can move or pass")),
+      ])
+    Error(game.CoolingDown) ->
+      json_response(409, [
+        #("msg", json.string("Your next action is still cooling down")),
+      ])
+    Error(game.GameFinished) ->
+      json_response(409, [#("msg", json.string("The game has finished"))])
+    Error(game.InvalidMove(error)) -> {
+      let message = case error {
+        go.OutOfBounds -> "That point is outside the board"
+        go.Occupied -> "That point is occupied"
+        go.Suicide -> "That move has no liberties"
+        go.Ko -> "That move repeats a previous board (superko)"
+      }
+      json_response(409, [#("msg", json.string(message))])
+    }
+  }
+}
+
 pub fn handle(
   players_actor: process.Subject(players.Message),
   lobby_actor: process.Subject(lobby.Message),
@@ -203,32 +235,13 @@ pub fn handle(
       use username <- router_utils.require_player(req, players_actor)
       use subject <- running_game(lobby_actor, id)
       use point <- router_utils.on_json(req, play_api.move_decoder)
-      case game.play(subject, username, point) {
-        Ok(Nil) ->
-          json_response_obj(
-            200,
-            play_api.state_to_json(game.get_game(subject).live),
-          )
-        Error(game.UnknownPlayer) ->
-          json_response(403, [
-            #("msg", json.string("Only players in this game can move")),
-          ])
-        Error(game.CoolingDown) ->
-          json_response(409, [
-            #("msg", json.string("Your next move is still cooling down")),
-          ])
-        Error(game.GameFinished) ->
-          json_response(409, [#("msg", json.string("The game has finished"))])
-        Error(game.InvalidMove(error)) -> {
-          let message = case error {
-            go.OutOfBounds -> "That point is outside the board"
-            go.Occupied -> "That point is occupied"
-            go.Suicide -> "That move has no liberties"
-            go.Ko -> "That move repeats a previous board (superko)"
-          }
-          json_response(409, [#("msg", json.string(message))])
-        }
-      }
+      play_response(subject, game.play(subject, username, point))
+    }
+
+    Post, ["games", id, "pass"] -> {
+      use username <- router_utils.require_player(req, players_actor)
+      use subject <- running_game(lobby_actor, id)
+      play_response(subject, game.pass(subject, username))
     }
 
     Post, ["games", id, "join"] -> {

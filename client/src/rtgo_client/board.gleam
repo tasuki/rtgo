@@ -1,4 +1,5 @@
 import gleam/dict
+import gleam/dynamic.{type Dynamic}
 import gleam/dynamic/decode
 import gleam/float
 import gleam/int
@@ -25,7 +26,67 @@ pub fn view(
   on_play: fn(go.Point) -> msg,
   on_cancel: msg,
 ) {
+  view_with_drag(
+    game,
+    dead_stones,
+    area,
+    active_player,
+    hovered,
+    premove,
+    on_hover,
+    on_play,
+    on_cancel,
+    False,
+    fn(_) { on_cancel },
+  )
+}
+
+@external(javascript, "../rtgo_drag_ffi.mjs", "dragPoints")
+fn drag_points(event: Dynamic, size: Int) -> Dynamic
+
+pub fn view_with_drag(
+  game: go.Game,
+  dead_stones: List(go.Point),
+  area: dict.Dict(go.Point, player.Player),
+  active_player: Option(player.Player),
+  hovered: Option(go.Point),
+  premove: Option(go.Point),
+  on_hover: fn(Option(go.Point)) -> msg,
+  on_play: fn(go.Point) -> msg,
+  on_cancel: msg,
+  drag: Bool,
+  on_drag: fn(List(go.Point)) -> msg,
+) {
   let board_size = game.board_size
+  let drag = drag && active_player != None
+  let drag_handler = {
+    use raw <- decode.then(decode.dynamic)
+    let points =
+      decode.run(
+        drag_points(raw, board_size),
+        decode.list({
+          use x <- decode.field("x", decode.int)
+          use y <- decode.field("y", decode.int)
+          decode.success(#(x, y))
+        }),
+      )
+    case points {
+      Ok([_, ..] as points) ->
+        decode.success(event.handler(on_drag(points), True, False))
+      _ -> decode.failure(event.handler(on_cancel, False, False), "drag points")
+    }
+  }
+  let drag_handlers = case drag {
+    True -> [
+      attribute.style("touch-action", "none"),
+      event.advanced("pointerdown", drag_handler),
+      event.advanced("pointermove", drag_handler),
+      event.advanced("pointerup", drag_handler),
+      event.advanced("pointercancel", drag_handler),
+      event.advanced("lostpointercapture", drag_handler),
+    ]
+    False -> []
+  }
   let view_box =
     "0.5 0.5 " <> int.to_string(board_size) <> " " <> int.to_string(board_size)
   let points =
@@ -34,7 +95,7 @@ pub fn view(
     })
 
   svg.svg(
-    [
+    list.append(drag_handlers, [
       attribute.attribute("viewBox", view_box),
       attribute.attribute("aria-label", "Go board"),
       event.on_mouse_leave(on_hover(None)),
@@ -46,7 +107,7 @@ pub fn view(
           _ -> decode.failure(handler, "Escape")
         }
       }),
-    ],
+    ]),
     [
       svg.g([], view_lines(1, board_size)),
       svg.g([], view_star_points(board_size)),
@@ -127,7 +188,14 @@ pub fn view(
                 True -> "true"
                 False -> "false"
               }),
-              event.on_click(on_play(point)),
+              event.on("click", case drag {
+                False -> decode.success(on_play(point))
+                True ->
+                  decode.failure(
+                    on_cancel,
+                    "keyboard or pointer drag instead of duplicate click",
+                  )
+              }),
               event.on_focus(on_hover(Some(point))),
               event.on_blur(on_hover(None)),
               event.advanced("keydown", {

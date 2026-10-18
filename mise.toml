@@ -42,8 +42,11 @@ run = "gleam test"
 [tasks."test:client"]
 dir = "client"
 run = "gleam test"
+[tasks."test:drag-input"]
+dir = "client"
+run = "node --test test/drag_ffi_test.mjs"
 [tasks.test]
-depends = ["test:shared", "test:server", "test:client"]
+depends = ["test:shared", "test:server", "test:client", "test:drag-input"]
 
 [tasks."test:single-view"]
 description = "Test production scoring over 20 fresh-engine KataGo trials"

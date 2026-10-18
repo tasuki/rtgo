@@ -35,6 +35,7 @@ fn state() -> play_api.State {
     dict.new(),
     play_api.NotScored,
     [],
+    dict.new(),
   )
 }
 

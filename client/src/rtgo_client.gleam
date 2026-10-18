@@ -72,6 +72,10 @@ pub type Model {
     create_board_size: Int,
     create_game_type: shared_game.GameType,
     create_cooldown: String,
+    create_timing: String,
+    create_reserve: String,
+    create_gap: String,
+    drag_in_flight: Int,
     cooldown_drafts: Dict(String, String),
     live: Option(play_api.State),
     loading_board: Bool,
@@ -87,8 +91,7 @@ pub fn initial_model(
   player: player_info.PlayerStatus,
   server_url: String,
 ) -> Model {
-  let shared_game.Cooldown(default_cooldown) =
-    shared_game.default_settings.time_settings
+  let default_cooldown = shared_game.base_cooldown(shared_game.default_settings)
   Model(
     route: route,
     player: player,
@@ -113,6 +116,10 @@ pub fn initial_model(
     create_board_size: shared_game.default_settings.board_size,
     create_game_type: shared_game.default_settings.game_type,
     create_cooldown: int.to_string(default_cooldown),
+    create_timing: "crazy_cooldown",
+    create_reserve: "5",
+    create_gap: "1000",
+    drag_in_flight: 0,
     cooldown_drafts: dict.new(),
     live: None,
     loading_board: False,
@@ -124,12 +131,27 @@ pub fn initial_model(
 }
 
 pub fn creation_settings(model: Model) -> Result(shared_game.Settings, Nil) {
-  use seconds <- result.try(int.parse(model.create_cooldown))
+  use timing <- result.try(case model.create_timing {
+    "drag_derby" -> Ok(shared_game.DragDerby)
+    mode -> {
+      use seconds <- result.try(int.parse(model.create_cooldown))
+      case mode {
+        "crazy_cooldown" -> Ok(shared_game.Cooldown(seconds))
+        "cushy_cooldown" -> Ok(shared_game.CushyCooldown(seconds))
+        "stone_savings" -> {
+          use cap <- result.try(int.parse(model.create_reserve))
+          use gap <- result.try(int.parse(model.create_gap))
+          Ok(shared_game.StoneSavings(seconds, cap, gap))
+        }
+        _ -> Error(Nil)
+      }
+    }
+  })
   let settings =
     shared_game.Settings(
       model.create_board_size,
       model.create_game_type,
-      shared_game.Cooldown(seconds),
+      timing,
     )
   case shared_game.valid_settings(settings) {
     True -> Ok(settings)
@@ -236,6 +258,9 @@ pub type Msg {
   BoardSizeChanged(String)
   GameTypeChanged(String)
   CooldownChanged(String)
+  TimeModeChanged(String)
+  SavingsCapChanged(String)
+  SavingsGapChanged(String)
   LeaveGamePressed(String)
   CancelGamePressed(String)
   GameLeft(Int, Result(Nil, rsvp.Error))
@@ -259,6 +284,9 @@ pub type Msg {
   PointHovered(Option(go.Point))
   ToggleMenu(String)
   PlayPoint(go.Point)
+  DragPoints(List(go.Point))
+  DragResponded(Int, Result(play_api.State, rsvp.Error))
+  PassPressed
   CancelPremove
   MoveResponded(Int, Result(play_api.State, rsvp.Error))
 }
@@ -336,6 +364,7 @@ pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     | BoardRefresh(version)
     | BoardLoaded(version, _)
     | MoveResponded(version, _)
+    | DragResponded(version, _)
     | GameColorChosen(version, _, _, _) -> version != model.page_version
     PreferredColorLoaded(version, _) | PreferredColorSaved(version, _, _) ->
       version != model.preference_version
@@ -375,6 +404,7 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           ..model,
           route: route,
           page_version: model.page_version + 1,
+          drag_in_flight: 0,
           current_game: None,
           live: None,
           loading_board: False,
@@ -765,6 +795,44 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       }),
       effect.none(),
     )
+    PassPressed ->
+      case
+        model.route,
+        credentials(model),
+        local_status(model),
+        model.pending_action,
+        model.drag_in_flight
+      {
+        Play(id), Ok(#(_, jwt)), Some(status), False, 0
+          if status.cooldown_ms == 0 && status.pass_in_ms != 0
+        -> #(
+          Model(
+            ..model,
+            pending_action: True,
+            premove: None,
+            action_error: None,
+          ),
+          rsvp.send(
+            play_api.pass_request(model.server_url, id, jwt),
+            rsvp.expect_json(play_api.state_decoder(), fn(res) {
+              MoveResponded(model.page_version, res)
+            }),
+          ),
+        )
+        _, _, _, _, _ -> #(model, effect.none())
+      }
+    DragPoints(points) -> send_drag(model, points)
+    DragResponded(_, response) -> {
+      let model =
+        Model(..model, drag_in_flight: int.max(0, model.drag_in_flight - 1))
+      case response {
+        Ok(state) -> #(accept_board(model, state), effect.none())
+        Error(error) -> #(
+          Model(..model, action_error: Some(action_error(error))),
+          effect.none(),
+        )
+      }
+    }
     PlayPoint(point) ->
       case
         local_status(model),
@@ -784,7 +852,11 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           ),
           effect.none(),
         )
-        Some(_), False, True -> send_move(model, point)
+        Some(_), False, True ->
+          case is_drag(model) {
+            True -> send_drag(model, [point])
+            False -> send_move(model, point)
+          }
         _, _, _ -> #(model, effect.none())
       }
     CancelPremove -> #(Model(..model, premove: None), effect.none())
@@ -808,6 +880,18 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       }
       #(Model(..model, create_game_type: game_type), effect.none())
     }
+    TimeModeChanged(value) -> #(
+      Model(..model, create_timing: value),
+      effect.none(),
+    )
+    SavingsCapChanged(value) -> #(
+      Model(..model, create_reserve: value),
+      effect.none(),
+    )
+    SavingsGapChanged(value) -> #(
+      Model(..model, create_gap: value),
+      effect.none(),
+    )
     CooldownChanged(value) -> #(
       Model(..model, create_cooldown: value),
       effect.none(),
@@ -827,7 +911,7 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         Ok(_), False, Error(_) ->
           action_failed(
             model,
-            "Choose a board size of 9, 13 or 19 and a cooldown of 1–60 seconds.",
+            "Choose a valid board size and timing settings. Base interval: 1–60s; reserve: 1–20; minimum gap: 0 to the base interval.",
           )
         _, _, _ -> #(model, effect.none())
       }
@@ -1132,6 +1216,49 @@ fn empty_point(game: go.Game, point: go.Point) -> Bool {
   && !dict.has_key(game.stones, point)
 }
 
+fn is_drag(model: Model) -> Bool {
+  case model.current_game {
+    Some(details) -> details.settings.time_settings == shared_game.DragDerby
+    None -> False
+  }
+}
+
+fn send_drag(model: Model, points: List(go.Point)) -> #(Model, Effect(Msg)) {
+  case
+    is_drag(model),
+    model.route,
+    credentials(model),
+    local_status(model),
+    model.pending_action
+  {
+    True, Play(id), Ok(#(_, jwt)), Some(_), False -> {
+      let points =
+        list.filter(points, fn(point) { empty_point(model.game, point) })
+      #(
+        Model(
+          ..model,
+          drag_in_flight: model.drag_in_flight + list.length(points),
+          premove: None,
+          hovered: None,
+          expanded_menu: None,
+          action_error: None,
+        ),
+        effect.batch(
+          list.map(points, fn(point) {
+            rsvp.send(
+              play_api.move_request(model.server_url, id, jwt, point),
+              rsvp.expect_json(play_api.state_decoder(), fn(res) {
+                DragResponded(model.page_version, res)
+              }),
+            )
+          }),
+        ),
+      )
+    }
+    _, _, _, _, _ -> #(model, effect.none())
+  }
+}
+
 fn send_move(model: Model, point: go.Point) -> #(Model, Effect(Msg)) {
   case model.route, credentials(model) {
     Play(id), Ok(#(_, jwt)) -> #(
@@ -1312,7 +1439,6 @@ fn view_errors(model: Model) -> Element(Msg) {
 }
 
 fn settings_summary(settings: shared_game.Settings) -> String {
-  let shared_game.Cooldown(seconds) = settings.time_settings
   let size = int.to_string(settings.board_size)
   shared_game.game_type_label(settings.game_type)
   <> " · "
@@ -1320,8 +1446,22 @@ fn settings_summary(settings: shared_game.Settings) -> String {
   <> "×"
   <> size
   <> " · "
-  <> int.to_string(seconds)
-  <> "s cooldown"
+  <> shared_game.timing_label(settings.time_settings)
+  <> case settings.time_settings {
+    shared_game.DragDerby -> " · unlimited"
+    shared_game.StoneSavings(seconds, cap, gap) ->
+      " · "
+      <> int.to_string(seconds)
+      <> "s base · "
+      <> int.to_string(cap)
+      <> " stone reserve · "
+      <> int.to_string(gap)
+      <> "ms minimum gap"
+    _ ->
+      " · "
+      <> int.to_string(shared_game.base_cooldown(settings))
+      <> "s cooldown"
+  }
 }
 
 fn view_create_form(model: Model) -> Element(Msg) {
@@ -1378,7 +1518,51 @@ fn view_create_form(model: Model) -> Element(Msg) {
           )
         }),
       ),
-      html.label([attribute.for("cooldown")], [html.text("Cooldown (seconds)")]),
+      html.label([attribute.for("time-mode")], [html.text("Time system")]),
+      html.select(
+        [
+          attribute.id("time-mode"),
+          attribute.disabled(model.pending_action),
+          event.on_change(TimeModeChanged),
+        ],
+        list.map(
+          [
+            #("crazy_cooldown", "Crazy Cooldown"),
+            #("cushy_cooldown", "Cushy Cooldown"),
+            #("stone_savings", "Stone Savings"),
+            #("simul_slaughter", "Simul Slaughter — coming later"),
+            #("drag_derby", "Drag Derby"),
+          ],
+          fn(entry) {
+            html.option(
+              [
+                attribute.value(entry.0),
+                attribute.selected(model.create_timing == entry.0),
+                attribute.disabled(entry.0 == "simul_slaughter"),
+              ],
+              entry.1,
+            )
+          },
+        ),
+      ),
+      html.p([], [
+        html.text(case model.create_timing {
+          "cushy_cooldown" ->
+            "Ready time credits up to 25% of your next cooldown. No banked stones."
+          "stone_savings" ->
+            "Bank stones: each additional stored stone takes longer to earn (1×, 2×, 3×…). Pass explicitly; saving will not auto-pass."
+          "drag_derby" ->
+            "No cooldown. Click and drag to paint the board with placement attempts."
+          _ ->
+            "One stone, then your full cooldown. Everyone starts cooling down."
+        }),
+      ]),
+      html.label([attribute.for("cooldown")], [
+        html.text(case model.create_timing {
+          "stone_savings" -> "Base recharge interval (seconds)"
+          _ -> "Cooldown (seconds)"
+        }),
+      ]),
       html.input([
         attribute.id("cooldown"),
         attribute.type_("number"),
@@ -1386,9 +1570,45 @@ fn view_create_form(model: Model) -> Element(Msg) {
         attribute.max("60"),
         attribute.required(True),
         attribute.value(model.create_cooldown),
-        attribute.disabled(model.pending_action),
+        attribute.disabled(
+          model.pending_action || model.create_timing == "drag_derby",
+        ),
         event.on_input(CooldownChanged),
       ]),
+      case model.create_timing {
+        "stone_savings" ->
+          html.div([], [
+            html.label([attribute.for("savings-cap")], [
+              html.text("Maximum saved stones"),
+            ]),
+            html.input([
+              attribute.id("savings-cap"),
+              attribute.type_("number"),
+              attribute.min("1"),
+              attribute.max("20"),
+              attribute.required(True),
+              attribute.value(model.create_reserve),
+              attribute.disabled(model.pending_action),
+              event.on_input(SavingsCapChanged),
+            ]),
+            html.label([attribute.for("savings-gap")], [
+              html.text("Minimum placement gap (milliseconds)"),
+            ]),
+            html.input([
+              attribute.id("savings-gap"),
+              attribute.type_("number"),
+              attribute.min("0"),
+              attribute.max(int.to_string(
+                { int.parse(model.create_cooldown) |> result.unwrap(5) } * 1000,
+              )),
+              attribute.required(True),
+              attribute.value(model.create_gap),
+              attribute.disabled(model.pending_action),
+              event.on_input(SavingsGapChanged),
+            ]),
+          ])
+        _ -> html.text("")
+      },
       html.button(
         [
           attribute.type_("submit"),
@@ -1523,7 +1743,14 @@ fn view_player(
       html.div([], [
         html.span([attribute.class("player-name")], [html.text(name)]),
         html.small([attribute.class("player-cooldown")], [
-          html.text(int.to_string(seconds) <> "s between moves"),
+          html.text(case details.settings.time_settings {
+            shared_game.DragDerby -> "Unlimited placements"
+            shared_game.StoneSavings(_, _, _) ->
+              int.to_string(seconds) <> "s base recharge"
+            shared_game.CushyCooldown(_) ->
+              int.to_string(seconds) <> "s cooldown · up to 25% credit"
+            _ -> int.to_string(seconds) <> "s between moves"
+          }),
         ]),
       ]),
       view_room_color(model, details, name),
@@ -1540,7 +1767,10 @@ fn view_player(
               attribute.required(True),
               attribute.attribute("aria-label", "Cooldown seconds for " <> name),
               attribute.value(cooldown_value(model, details, name)),
-              attribute.disabled(model.pending_action),
+              attribute.disabled(
+                model.pending_action
+                || details.settings.time_settings == shared_game.DragDerby,
+              ),
               event.on_input(fn(value) { PlayerCooldownChanged(name, value) }),
               event.on_blur(SetPlayerCooldownPressed(details.id, name)),
               event.advanced("keydown", {
@@ -1650,9 +1880,13 @@ fn view_game_room(model: Model, details: lobby_api.GameDetails) -> Element(Msg) 
     html.div([attribute.class("lobby-section")], [
       html.h2([], [html.text("Players")]),
       html.p([], [
-        html.text(
-          "Longer cooldowns handicap a player by making them wait longer between moves.",
-        ),
+        html.text(case details.settings.time_settings {
+          shared_game.DragDerby -> "Drag Derby has no timing handicaps."
+          shared_game.StoneSavings(_, _, _) ->
+            "Longer base recharge intervals handicap a player by earning stones more slowly."
+          _ ->
+            "Longer cooldowns handicap a player by making them wait longer between moves."
+        }),
       ]),
       keyed.ul(
         [attribute.class("players-list")],
@@ -1673,7 +1907,7 @@ fn view_play(model: Model) -> Element(Msg) {
           html.div([attribute.id("play-page")], [
             html.div([attribute.id("board-container")], [
               html.div([attribute.id("board")], [
-                board.view(
+                board.view_with_drag(
                   model.game,
                   model.live
                     |> option.map(fn(s) { s.dead_stones })
@@ -1685,6 +1919,8 @@ fn view_play(model: Model) -> Element(Msg) {
                   PointHovered,
                   PlayPoint,
                   CancelPremove,
+                  is_drag(model),
+                  DragPoints,
                 ),
               ]),
             ]),
@@ -1810,6 +2046,41 @@ fn view_recording_actions(model: Model) -> Element(Msg) {
   }
 }
 
+fn end_description(state: play_api.State) -> String {
+  case state.end_in_ms < 0 {
+    True -> "Everyone passing ends the game. Saving stones does not auto-pass."
+    False ->
+      "Everyone passing ends the game in "
+      <> seconds_text(state.end_in_ms)
+      <> " unless someone moves."
+  }
+}
+
+fn view_pass_button(model: Model) -> Element(Msg) {
+  case local_status(model) {
+    Some(status) ->
+      html.button(
+        [
+          attribute.type_("button"),
+          attribute.disabled(
+            model.pending_action
+            || model.drag_in_flight > 0
+            || status.cooldown_ms > 0
+            || status.pass_in_ms == 0,
+          ),
+          event.on_click(PassPressed),
+        ],
+        [
+          html.text(case status.pass_in_ms == 0 {
+            True -> "Passing — play to resume"
+            False -> "Pass"
+          }),
+        ],
+      )
+    None -> html.text("")
+  }
+}
+
 fn view_live_status(model: Model) -> Element(Msg) {
   case model.live {
     None ->
@@ -1823,6 +2094,11 @@ fn view_live_status(model: Model) -> Element(Msg) {
             False -> "Playing"
           }),
         ]),
+        case model.current_game {
+          Some(details) ->
+            html.p([], [html.text(settings_summary(details.settings))])
+          None -> html.text("")
+        },
         case state.finished {
           True ->
             html.p(
@@ -1837,12 +2113,10 @@ fn view_live_status(model: Model) -> Element(Msg) {
         html.p([], [
           html.text(case state.finished {
             True -> scoring_explanation(state)
-            False ->
-              "Everyone passing ends the game in "
-              <> seconds_text(state.end_in_ms)
-              <> " unless someone moves."
+            False -> end_description(state)
           }),
         ]),
+        view_pass_button(model),
         view_recording_actions(model),
         html.ul(
           [attribute.class("live-players")],
@@ -1877,9 +2151,12 @@ fn view_live_status(model: Model) -> Element(Msg) {
           True -> html.text("")
           False ->
             html.small([], [
-              html.text(
-                "Click or tap to play, or queue a premove during cooldown. Click elsewhere to replace it; click it again or press Escape to cancel. The bars disappear when you can play. KataGo estimates dead groups when play ends.",
-              ),
+              html.text(case is_drag(model) {
+                True ->
+                  "Click and drag to place stones immediately. Unlimited attempts; normal board legality still applies. Pass to finish, or play to resume before everyone passes."
+                False ->
+                  "Click or tap to play, or queue a premove while waiting. Click elsewhere to replace it; click it again or press Escape to cancel. Pass when ready; a legal move clears your pass without bypassing timing. KataGo estimates dead groups when play ends."
+              }),
             ])
         },
       ])
@@ -1897,10 +2174,28 @@ fn player_status_text(
         dict.get(state.scores, status.player.username) |> result.unwrap(0),
       )
       <> " points"
-    False if status.cooldown_ms > 0 ->
-      "Ready in " <> seconds_text(status.cooldown_ms)
-    False if status.pass_in_ms == 0 -> "Passing (can still play)"
-    False -> "Ready · passing in " <> seconds_text(status.pass_in_ms)
+    False -> {
+      let bank = case dict.get(state.savings, status.player.username) {
+        Ok(bank) ->
+          int.to_string(bank.credits)
+          <> "/"
+          <> int.to_string(bank.capacity)
+          <> " stones · "
+          <> case bank.recharge_ms {
+            0 -> "bank full · "
+            _ -> "next in " <> seconds_text(bank.recharge_ms) <> " · "
+          }
+        Error(_) -> ""
+      }
+      bank
+      <> case status.pass_in_ms {
+        0 -> "Passing (can still play)"
+        _ if status.cooldown_ms > 0 ->
+          "Ready in " <> seconds_text(status.cooldown_ms)
+        _ if status.pass_in_ms < 0 -> "Ready · explicit pass"
+        _ -> "Ready · passing in " <> seconds_text(status.pass_in_ms)
+      }
+    }
   }
 }
 
@@ -1972,10 +2267,7 @@ fn view_menu(model: Model) -> Element(Msg) {
         Some(state) -> {
           let end_label = case state.finished {
             True -> result_text(state)
-            False ->
-              "Everyone passing ends the game in "
-              <> seconds_text(state.end_in_ms)
-              <> " unless someone moves."
+            False -> end_description(state)
           }
           let end =
             menu_popover(
@@ -1984,6 +2276,7 @@ fn view_menu(model: Model) -> Element(Msg) {
               case state.finished {
                 True if state.scoring == play_api.Scoring -> "…"
                 True -> "✓"
+                False if state.end_in_ms < 0 -> "P"
                 False -> int.to_string({ state.end_in_ms + 999 } / 1000)
               },
               end_label,
@@ -1994,16 +2287,17 @@ fn view_menu(model: Model) -> Element(Msg) {
                   html.text(case state.finished {
                     True if state.scoring == play_api.Scoring -> "Scoring…"
                     True -> "Game over"
-                    False -> "Automatic passing"
+                    False -> "Passing"
                   }),
                 ]),
                 html.p([], [html.text(end_label)]),
+                view_pass_button(model),
                 view_recording_actions(model),
                 html.p([], [
                   html.text(case state.finished {
                     True -> scoring_explanation(state)
                     False ->
-                      "A player passes after 10 seconds of being ready. A move clears their pass; everyone passing ends the game."
+                      "Pass when ready, or play to clear your pass. Passing never resets timing or grants credits. Everyone passing ends the game. Outside Stone Savings, ten seconds of readiness also passes automatically."
                   }),
                 ]),
               ],
@@ -2032,6 +2326,11 @@ fn view_menu(model: Model) -> Element(Msg) {
                 False if status.cooldown_ms > 0 ->
                   int.to_string({ status.cooldown_ms + 999 } / 1000)
                 False if status.pass_in_ms == 0 -> "P"
+                False if status.pass_in_ms < 0 ->
+                  case dict.get(state.savings, p.username) {
+                    Ok(bank) -> int.to_string(bank.credits)
+                    Error(_) -> "✓"
+                  }
                 False -> int.to_string({ status.pass_in_ms + 999 } / 1000)
               }
               menu_popover(
@@ -2059,6 +2358,10 @@ fn view_menu(model: Model) -> Element(Msg) {
                 [
                   html.strong([], [html.text(name)]),
                   html.p([], [html.text(player_status_text(state, status))]),
+                  case own {
+                    True -> view_pass_button(model)
+                    False -> html.text("")
+                  },
                 ],
               )
             })

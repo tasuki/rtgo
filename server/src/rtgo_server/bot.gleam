@@ -46,7 +46,10 @@ fn run(
                   let _ = game.play(subject, name, point)
                   Nil
                 }
-                None -> Nil
+                None -> {
+                  let _ = game.pass(subject, name)
+                  Nil
+                }
               }
               // Passes and rejections don't repeatedly query the same position.
               Some(snapshot.board.stones)

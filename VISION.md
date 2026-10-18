@@ -5,6 +5,8 @@
 Start with a cooldown period. After playing a move, get another cooldown period,
 then play another move.
 
+Planned timing variants and open design questions: [docs/time-systems.md](docs/time-systems.md).
+
 Two players? Sure! Five players, why not?
 
 ## UI

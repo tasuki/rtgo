@@ -13,10 +13,12 @@ import rtgo_shared/game as shared_game
 import rtgo_shared/go
 import rtgo_shared/play_api
 import rtgo_shared/player
+import rtgo_shared/savings
 import rtgo_shared/sgf
 
-/// Times are server-monotonic milliseconds. A player automatically passes ten
-/// seconds after becoming ready, and may resume until everyone has passed.
+/// Times are server-monotonic milliseconds. All modes support explicit passing
+/// when ready, reversible by a legal move until everyone passes. Except in Stone
+/// Savings, ten seconds of readiness also automatically passes the player.
 pub const pass_grace_ms = 10_000
 
 pub type State {
@@ -26,6 +28,8 @@ pub type State {
     settings: shared_game.Settings,
     cooldowns: Dict(String, Int),
     ready_at: Dict(String, Int),
+    passed_at: Dict(String, Int),
+    banks: Dict(String, savings.Bank),
     phase: shared_game.GamePhase,
     revision: Int,
     scoring: play_api.ScoringStatus,
@@ -57,6 +61,7 @@ pub type Error {
 
 pub type Message {
   Play(player: String, move: go.Point, reply: Subject(Result(Nil, Error)))
+  Pass(player: String, reply: Subject(Result(Nil, Error)))
   GetGame(reply: Subject(Snapshot))
   GetRecord(reply: Subject(sgf.Record))
   Tick(Subject(Message))
@@ -75,11 +80,15 @@ fn cooldown_ms(
   settings: shared_game.Settings,
   name: String,
 ) -> Int {
-  {
-    dict.get(cooldowns, name)
-    |> result.unwrap(shared_game.base_cooldown(settings))
+  case settings.time_settings {
+    shared_game.DragDerby -> 0
+    _ ->
+      {
+        dict.get(cooldowns, name)
+        |> result.unwrap(shared_game.base_cooldown(settings))
+      }
+      * 1000
   }
-  * 1000
 }
 
 pub fn new_state(
@@ -96,6 +105,12 @@ pub fn new_state(
     dict.map_values(players, fn(name, _) {
       now + cooldown_ms(cooldowns, settings, name)
     }),
+    dict.new(),
+    case settings.time_settings {
+      shared_game.StoneSavings(_, _, _) ->
+        dict.map_values(players, fn(_, _) { savings.new(now) })
+      _ -> dict.new()
+    },
     shared_game.Started,
     0,
     play_api.NotScored,
@@ -103,45 +118,131 @@ pub fn new_state(
     dict.new(),
     [],
     now,
-    sgf.new(
-      settings.board_size,
-      players
-        |> dict.values
-        |> list.sort(fn(a, b) { string.compare(a.username, b.username) })
-        |> list.index_map(fn(p, i) {
-          sgf.Seat(
-            "p" <> int.to_string(i + 1),
-            p,
-            cooldown_ms(cooldowns, settings, p.username),
-          )
-        }),
+    sgf.Record(
+      ..sgf.new(
+        settings.board_size,
+        players
+          |> dict.values
+          |> list.sort(fn(a, b) { string.compare(a.username, b.username) })
+          |> list.index_map(fn(p, i) {
+            sgf.Seat(
+              "p" <> int.to_string(i + 1),
+              p,
+              cooldown_ms(cooldowns, settings, p.username),
+            )
+          }),
+      ),
+      time_settings: Some(settings.time_settings),
     ),
   )
 }
 
 pub fn advance(state: State, now: Int) -> State {
-  case
-    state.phase == shared_game.Started
-    && list.all(dict.values(state.ready_at), fn(ready) {
-      now >= ready + pass_grace_ms
-    })
-  {
-    True ->
-      State(
-        ..state,
-        phase: shared_game.Finished,
-        scoring: play_api.Scoring,
-        revision: state.revision + 1,
-        record: sgf.Record(
-          ..state.record,
-          finished_at: Some(
-            list.fold(dict.values(state.ready_at), state.started_at, int.max)
-            + pass_grace_ms
-            - state.started_at,
-          ),
-        ),
+  case state.phase {
+    shared_game.Finished -> state
+    _ -> {
+      let state = case state.settings.time_settings {
+        shared_game.StoneSavings(_, capacity, _) ->
+          State(
+            ..state,
+            banks: dict.map_values(state.banks, fn(name, bank) {
+              savings.advance(
+                bank,
+                now,
+                cooldown_ms(state.cooldowns, state.settings, name),
+                capacity,
+              )
+            }),
+          )
+        _ -> state
+      }
+      let deadlines =
+        dict.keys(state.players)
+        |> list.map(fn(name) { pass_deadline(state, name) })
+      case
+        list.all(deadlines, fn(deadline) {
+          case deadline {
+            Some(time) -> now >= time
+            None -> False
+          }
+        })
+      {
+        True -> {
+          let ended_at =
+            list.fold(deadlines, state.started_at, fn(latest, deadline) {
+              int.max(latest, option.unwrap(deadline, latest))
+            })
+          State(
+            ..state,
+            phase: shared_game.Finished,
+            scoring: play_api.Scoring,
+            revision: state.revision + 1,
+            record: sgf.Record(
+              ..state.record,
+              finished_at: Some(ended_at - state.started_at),
+            ),
+          )
+        }
+        False -> state
+      }
+    }
+  }
+}
+
+fn pass_deadline(state: State, name: String) -> Option(Int) {
+  case dict.get(state.passed_at, name) {
+    Ok(time) -> Some(time)
+    Error(_) ->
+      case state.settings.time_settings {
+        // Saving is intentional, not inactivity. Banked games end by explicit pass.
+        shared_game.StoneSavings(_, _, _) -> None
+        _ ->
+          dict.get(state.ready_at, name)
+          |> result.map(fn(ready) { ready + pass_grace_ms })
+          |> option.from_result
+      }
+  }
+}
+
+fn ready_in(state: State, name: String, now: Int) -> Int {
+  case dict.get(state.banks, name) {
+    Ok(bank) ->
+      savings.ready_in(
+        bank,
+        now,
+        cooldown_ms(state.cooldowns, state.settings, name),
       )
-    False -> state
+    Error(_) ->
+      int.max(0, { dict.get(state.ready_at, name) |> result.unwrap(now) } - now)
+  }
+}
+
+/// Passing never changes readiness or the bank. A legal move clears the pass.
+/// Like placing a stone, an explicit pass is only accepted when ready.
+pub fn pass_at(state: State, name: String, now: Int) -> Result(State, Error) {
+  let state = advance(state, now)
+  use _ <- result.try(
+    dict.get(state.players, name) |> result.replace_error(UnknownPlayer),
+  )
+  case state.phase {
+    shared_game.Finished -> Error(GameFinished)
+    _ ->
+      case ready_in(state, name, now) > 0 {
+        True -> Error(CoolingDown)
+        False ->
+          case dict.has_key(state.passed_at, name) {
+            True -> Ok(state)
+            False ->
+              Ok(advance(
+                State(
+                  ..state,
+                  passed_at: dict.insert(state.passed_at, name, now),
+                  revision: state.revision + 1,
+                ),
+                now,
+              ))
+          }
+      }
   }
 }
 
@@ -160,7 +261,7 @@ pub fn play_at(
     shared_game.Finished -> Error(GameFinished)
     _ -> {
       let assert Ok(ready) = dict.get(state.ready_at, name)
-      case now < ready {
+      case ready_in(state, name, now) > 0 {
         True -> Error(CoolingDown)
         False -> {
           use board <- result.try(
@@ -168,15 +269,31 @@ pub fn play_at(
           )
           let assert Ok(seat) =
             list.find(state.record.seats, fn(s) { s.player.username == name })
+          let interval = cooldown_ms(state.cooldowns, state.settings, name)
+          let banks = case state.settings.time_settings {
+            shared_game.StoneSavings(_, _, gap) -> {
+              let assert Ok(bank) = dict.get(state.banks, name)
+              dict.insert(state.banks, name, savings.spend(bank, now, gap))
+            }
+            _ -> state.banks
+          }
+          let next_ready = case state.settings.time_settings {
+            shared_game.CushyCooldown(_) ->
+              now + interval - int.min(int.max(0, now - ready), interval / 4)
+            shared_game.DragDerby -> now
+            shared_game.StoneSavings(_, _, _) -> {
+              let assert Ok(bank) = dict.get(banks, name)
+              now + savings.ready_in(bank, now, interval)
+            }
+            _ -> now + interval
+          }
           Ok(
             State(
               ..state,
               board: board,
-              ready_at: dict.insert(
-                state.ready_at,
-                name,
-                now + cooldown_ms(state.cooldowns, state.settings, name),
-              ),
+              banks: banks,
+              passed_at: dict.delete(state.passed_at, name),
+              ready_at: dict.insert(state.ready_at, name, next_ready),
               revision: state.revision + 1,
               record: sgf.Record(..state.record, moves: [
                 sgf.Move(seat.id, point, now - state.started_at),
@@ -197,15 +314,35 @@ pub fn snapshot_at(state: State, now: Int) -> Snapshot {
     |> dict.values
     |> list.sort(fn(a, b) { string.compare(a.username, b.username) })
     |> list.map(fn(p) {
-      let assert Ok(ready) = dict.get(state.ready_at, p.username)
       play_api.PlayerStatus(
         p,
-        int.max(0, ready - now),
-        int.max(0, ready + pass_grace_ms - now),
+        ready_in(state, p.username, now),
+        case pass_deadline(state, p.username) {
+          Some(deadline) -> int.max(0, deadline - now)
+          None -> -1
+        },
       )
     })
-  let end_in =
-    list.fold(statuses, 0, fn(acc, status) { int.max(acc, status.pass_in_ms) })
+  let end_in = case list.any(statuses, fn(s) { s.pass_in_ms < 0 }) {
+    True -> -1
+    False ->
+      list.fold(statuses, 0, fn(acc, status) { int.max(acc, status.pass_in_ms) })
+  }
+  let balances = case state.settings.time_settings {
+    shared_game.StoneSavings(_, capacity, _) ->
+      dict.map_values(state.banks, fn(name, bank) {
+        play_api.SavingsStatus(
+          bank.credits,
+          capacity,
+          savings.recharge_in(
+            bank,
+            cooldown_ms(state.cooldowns, state.settings, name),
+            capacity,
+          ),
+        )
+      })
+    _ -> dict.new()
+  }
   let finished = state.phase == shared_game.Finished
   Snapshot(
     state.players,
@@ -222,6 +359,7 @@ pub fn snapshot_at(state: State, now: Int) -> Snapshot {
       state.scores,
       state.scoring,
       state.dead_stones,
+      balances,
     ),
   )
 }
@@ -286,6 +424,17 @@ fn handle_message(
   case msg {
     Play(name, point, reply) ->
       case play_at(state, name, point, now) {
+        Ok(updated) -> {
+          process.send(reply, Ok(Nil))
+          actor.continue(persist(recording, updated))
+        }
+        Error(error) -> {
+          process.send(reply, Error(error))
+          actor.continue(state)
+        }
+      }
+    Pass(name, reply) ->
+      case pass_at(state, name, now) {
         Ok(updated) -> {
           process.send(reply, Ok(Nil))
           actor.continue(persist(recording, updated))
@@ -385,6 +534,13 @@ pub fn play(
   move: go.Point,
 ) -> Result(Nil, Error) {
   process.call(subject, 1000, fn(reply) { Play(player_name, move, reply) })
+}
+
+pub fn pass(
+  subject: Subject(Message),
+  player_name: String,
+) -> Result(Nil, Error) {
+  process.call(subject, 1000, fn(reply) { Pass(player_name, reply) })
 }
 
 pub fn get_game(subject: Subject(Message)) -> Snapshot {
