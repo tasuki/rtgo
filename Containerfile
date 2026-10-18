@@ -55,7 +55,9 @@ COPY container/analysis.cfg /opt/katago/analysis.cfg
 COPY --from=server-build /build/server/build/erlang-shipment /app
 COPY --from=client-build /build/client/dist /app/static
 WORKDIR /app
-ENV SERVER_PORT=8000
+ENV SERVER_PORT=8000 SGF_DIR=/data/sgf
+RUN mkdir -p /data/sgf && chown -R 65534:65534 /data
+VOLUME ["/data"]
 USER 65534:65534
 EXPOSE 8000
 ENTRYPOINT ["/app/entrypoint.sh"]

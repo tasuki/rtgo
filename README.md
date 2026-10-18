@@ -23,7 +23,9 @@ SIGN_KEY = "this.one.should.be.rather.very.long"
 
 ```sh
 mise run image
+podman volume create rtgo-data
 podman run --rm -p 8000:8000 \
+  -v rtgo-data:/data \
   -e SECRET_KEY_BASE -e SIGN_KEY localhost/rtgo:latest
 ```
 
@@ -38,7 +40,9 @@ and `kata1-b6c96-s175395328-d26788732.txt.gz`. The KataGo source archive and mod
 are checksum-verified. Only the Erlang runtime, production application, minified
 frontend (including styles/fonts), engine and compressed model reach the final
 slim Debian image—no C++ toolchain, Gleam, Bun, GPU libraries or startup downloads.
-It runs as an unprivileged user.
+It runs as an unprivileged user. The named `rtgo-data` volume stores SGFs outside
+the container and survives `--rm` and image replacement; reuse it on subsequent
+runs. Without an explicit mount, do not rely on the container's anonymous volume.
 
 Hosts can **Add KataGo bot** in a waiting room, then start normally. Bots occupy
 ordinary seats and can be kicked or handicapped with longer cooldowns. One
@@ -163,9 +167,54 @@ If KataGo is absent, fails, or scoring exceeds 30 seconds, the UI explicitly lab
 an **unassisted area score** with no dead stones removed. No provisional winner is
 shown while waiting, and clients keep polling until the result is ready.
 
-The lobby and waiting room refresh automatically every second. Finished games
-remain accessible at their room URL. State is currently in memory and disappears
-on server restart.
+The lobby and waiting room refresh automatically every second. The lobby lists
+open, in-progress, and finished games separately. Click a finished game to open
+its final board, results, and replay/download controls. Finished games remain
+listed and accessible at their room URL until restart. Live rooms and account state
+are in memory; SGF recordings persist separately.
+
+### Recordings and replay
+
+Every started game is recorded, including multiplayer, handicaps, move timestamps,
+and final scoring/dead-stone annotations. The server saves an atomic SGF snapshot
+at start, after accepted moves, when play ends, and after scoring. `SGF_DIR`
+selects the directory: `data/sgf` by default, `/data/sgf` in the image. Files and
+downloads are named `YYYY-MM-DD-<game-code>.sgf`, e.g. `2026-10-18-four.sgf`, using
+the game's start date in UTC (fixed even across midnight). Startup fails if the
+directory isn't writable; later write failures are logged. Saves are asynchronous,
+so an abrupt kill can lose the most recent queued updates.
+
+After a game ends, its game-info and result menu panels offer **Replay game** and
+**Download SGF** immediately, even while scoring is pending. The replay page has
+Start/Previous/Next/End controls and a move slider, preserves each player's color,
+and reconstructs captures. Final scoring overlays appear only at the end.
+
+To replay an older file, choose **Replay an SGF recording** in the lobby (or open
+`/replay`), paste its contents, and click **Load SGF**. Imports stay in the browser;
+no server upload or login is required. This accepts RTGO version-1 recordings,
+not arbitrary third-party Go SGFs. Malformed or unsupported files show an error.
+Saved `/replay/<room-id>` links also work after server restart, without restoring
+the original live room. Reload a replay opened during scoring to get the final score.
+
+For a host-directory mount instead of the named Podman volume:
+
+```sh
+mkdir -p data
+podman run --rm -p 8000:8000 \
+  --userns=keep-id --user "$(id -u):$(id -g)" \
+  -v "$PWD/data:/data:Z" \
+  -e SECRET_KEY_BASE -e SIGN_KEY localhost/rtgo:latest
+```
+
+For Docker, mount a named volume at `/data` or make the bind directory writable
+by the image's UID/GID `65534:65534`. Recordings contain public player names and
+are downloadable by anyone who knows the room ID. Back up this directory; they
+are not a database for resuming live games.
+
+The multiplayer SGF extension is specified in **[docs/sgf.md](docs/sgf.md)**.
+Player metadata stays together as
+`RTPLAYER[p1:Alice:black:1000][p2:Bob:white:2000]`; it isn't JSON. Ordinary SGF
+viewers only understand the extra standard B/W moves in two-player recordings.
 
 ## Test
 

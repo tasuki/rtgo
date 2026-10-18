@@ -24,6 +24,7 @@ import rsvp
 import rtgo_client/board
 import rtgo_client/color_picker
 import rtgo_client/player_info
+import rtgo_client/replay
 import rtgo_shared/auth
 import rtgo_shared/auth_api
 import rtgo_shared/game as shared_game
@@ -42,6 +43,7 @@ pub type Route {
   PlayerInfo
   CreateJoinGame
   Play(game_id: String)
+  Replay(record_id: Option(String))
 }
 
 pub type Model {
@@ -76,6 +78,7 @@ pub type Model {
     hovered: Option(go.Point),
     premove: Option(go.Point),
     expanded_menu: Option(String),
+    replay: replay.Model,
   )
 }
 
@@ -116,6 +119,7 @@ pub fn initial_model(
     hovered: None,
     premove: None,
     expanded_menu: None,
+    replay: replay.new(),
   )
 }
 
@@ -138,6 +142,8 @@ fn route_from_uri(uri: Uri) -> Route {
     [] -> PlayerInfo
     ["create"] -> CreateJoinGame
     ["play", game_id] -> Play(game_id)
+    ["replay"] -> Replay(None)
+    ["replay", id] -> Replay(Some(id))
     _ -> PlayerInfo
   }
 }
@@ -147,6 +153,8 @@ fn route_to_str(route: Route) -> String {
     PlayerInfo -> "/"
     CreateJoinGame -> "/create"
     Play(game_id) -> "/play/" <> game_id
+    Replay(None) -> "/replay"
+    Replay(Some(id)) -> "/replay/" <> id
   }
 }
 
@@ -206,6 +214,8 @@ fn load_game(model: Model, id: String) -> Effect(Msg) {
 
 pub type Msg {
   RouteChanged(Route)
+  ReplayMsg(replay.Msg)
+  SgfLoaded(Int, Result(String, rsvp.Error))
   Refresh(Int)
   PingRequested
   PingResponded(Result(Duration, rsvp.Error))
@@ -311,7 +321,8 @@ fn action_error(error: rsvp.Error) -> String {
 
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   let stale = case msg {
-    Refresh(version)
+    SgfLoaded(version, _)
+    | Refresh(version)
     | GamesLoaded(version, _)
     | GameLoaded(version, _)
     | GameCreated(version, _)
@@ -378,8 +389,21 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           after_save: None,
           load_error: None,
           action_error: None,
+          replay: replay.new(),
         )
       update(model, Refresh(model.page_version))
+    }
+    ReplayMsg(msg) -> #(
+      Model(..model, replay: replay.update(model.replay, msg)),
+      effect.none(),
+    )
+    SgfLoaded(_, response) -> {
+      let replay = case response {
+        Ok(source) -> replay.load(model.replay, source)
+        Error(error) ->
+          replay.Model(..model.replay, error: Some(action_error(error)))
+      }
+      #(Model(..model, replay: replay, loading_game: False), effect.none())
     }
     Refresh(_) if model.loading_lobby || model.loading_game -> #(
       model,
@@ -392,7 +416,19 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           load_lobby_games(model),
         )
         Play(id) -> #(Model(..model, loading_game: True), load_game(model, id))
-        PlayerInfo -> #(model, effect.none())
+        Replay(Some(id)) -> #(
+          Model(..model, loading_game: True),
+          rsvp.get(
+            model.server_url <> "/games/" <> uri.percent_encode(id) <> "/sgf",
+            rsvp.expect_ok_response(fn(res) {
+              SgfLoaded(
+                model.page_version,
+                result.map(res, fn(response) { response.body }),
+              )
+            }),
+          ),
+        )
+        Replay(None) | PlayerInfo -> #(model, effect.none())
       }
     PingRequested -> #(model, ping_server(model.server_url))
     PingResponded(duration_res) -> #(
@@ -1373,6 +1409,10 @@ fn view_lobby(model: Model) -> Element(Msg) {
     list.filter(model.lobby_games, fn(game) {
       game.phase == shared_game.Started
     })
+  let finished_games =
+    list.filter(model.lobby_games, fn(game) {
+      game.phase == shared_game.Finished
+    })
   html.div([attribute.id("page-container"), attribute.class("lobby-page")], [
     html.div([attribute.class("lobby-header")], [
       html.h1([], [html.text("Lobby")]),
@@ -1399,6 +1439,7 @@ fn view_lobby(model: Model) -> Element(Msg) {
       None -> html.text("")
     },
     view_errors(model),
+    html.a([attribute.href("/replay")], [html.text("Replay an SGF recording")]),
     view_create_form(model),
     case
       model.loading_lobby && !model.lobby_loaded && model.load_error == None
@@ -1408,6 +1449,7 @@ fn view_lobby(model: Model) -> Element(Msg) {
         html.div([], [
           view_games(model, "Open for joining", open_games),
           view_games(model, "In progress", running_games),
+          view_games(model, "Finished games", finished_games),
         ])
     },
   ])
@@ -1751,6 +1793,23 @@ fn winner_text(state: play_api.State) -> String {
   }
 }
 
+fn view_recording_actions(model: Model) -> Element(Msg) {
+  case model.route, model.live {
+    Play(id), Some(state) if state.finished ->
+      html.div([attribute.class("game-actions")], [
+        html.a([attribute.href("/replay/" <> id)], [html.text("Replay game")]),
+        html.a(
+          [
+            attribute.href(model.server_url <> "/games/" <> id <> "/sgf"),
+            attribute.attribute("download", ""),
+          ],
+          [html.text("Download SGF")],
+        ),
+      ])
+    _, _ -> html.text("")
+  }
+}
+
 fn view_live_status(model: Model) -> Element(Msg) {
   case model.live {
     None ->
@@ -1784,6 +1843,7 @@ fn view_live_status(model: Model) -> Element(Msg) {
               <> " unless someone moves."
           }),
         ]),
+        view_recording_actions(model),
         html.ul(
           [attribute.class("live-players")],
           list.map(result_players(state), fn(status) {
@@ -1938,6 +1998,7 @@ fn view_menu(model: Model) -> Element(Msg) {
                   }),
                 ]),
                 html.p([], [html.text(end_label)]),
+                view_recording_actions(model),
                 html.p([], [
                   html.text(case state.finished {
                     True -> scoring_explanation(state)
@@ -2112,8 +2173,35 @@ fn view_countdown_bars(model: Model) -> Element(Msg) {
 pub fn view(model: Model) -> Element(Msg) {
   html.div([attribute.id("container")], [
     view_menu(model),
-    case model.player {
-      player_info.LoggedIn(name, _) ->
+    case model.route, model.player {
+      Replay(_), _ ->
+        html.div(
+          [attribute.id("page-container"), attribute.class("lobby-page")],
+          [
+            html.a([attribute.href("/create")], [html.text("Back to lobby")]),
+            case model.route {
+              Replay(Some(id)) ->
+                html.a(
+                  [
+                    attribute.href(
+                      model.server_url
+                      <> "/games/"
+                      <> uri.percent_encode(id)
+                      <> "/sgf",
+                    ),
+                    attribute.attribute("download", ""),
+                  ],
+                  [html.text("Download SGF")],
+                )
+              _ -> html.text("")
+            },
+            element.map(
+              replay.view(model.replay, model.loading_game),
+              ReplayMsg,
+            ),
+          ],
+        )
+      _, player_info.LoggedIn(name, _) ->
         case model.route {
           PlayerInfo ->
             html.div([attribute.id("page-container")], [
@@ -2124,8 +2212,9 @@ pub fn view(model: Model) -> Element(Msg) {
             ])
           CreateJoinGame -> view_lobby(model)
           Play(_) -> view_play(model)
+          Replay(_) -> html.text("")
         }
-      _ ->
+      _, _ ->
         player_info.view(
           model.player,
           model.preferred_color,

@@ -3,14 +3,17 @@ import gleam/erlang/atom
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/string
 import rtgo_server/adjudication
+import rtgo_server/recorder
 import rtgo_shared/game as shared_game
 import rtgo_shared/go
 import rtgo_shared/play_api
 import rtgo_shared/player
+import rtgo_shared/sgf
 
 /// Times are server-monotonic milliseconds. A player automatically passes ten
 /// seconds after becoming ready, and may resume until everyone has passed.
@@ -29,6 +32,8 @@ pub type State {
     scoring_started: Bool,
     scores: Dict(String, Int),
     dead_stones: List(go.Point),
+    started_at: Int,
+    record: sgf.Record,
   )
 }
 
@@ -53,6 +58,7 @@ pub type Error {
 pub type Message {
   Play(player: String, move: go.Point, reply: Subject(Result(Nil, Error)))
   GetGame(reply: Subject(Snapshot))
+  GetRecord(reply: Subject(sgf.Record))
   Tick(Subject(Message))
   Scored(Result(List(go.Point), Nil))
 }
@@ -82,6 +88,24 @@ pub fn new_state(
     False,
     dict.new(),
     [],
+    now,
+    sgf.new(
+      settings.board_size,
+      players
+        |> dict.values
+        |> list.sort(fn(a, b) { string.compare(a.username, b.username) })
+        |> list.index_map(fn(p, i) {
+          sgf.Seat(
+            "p" <> int.to_string(i + 1),
+            p,
+            {
+              dict.get(cooldowns, p.username)
+              |> result.unwrap(shared_game.base_cooldown(settings))
+            }
+              * 1000,
+          )
+        }),
+    ),
   )
 }
 
@@ -98,6 +122,14 @@ pub fn advance(state: State, now: Int) -> State {
         phase: shared_game.Finished,
         scoring: play_api.Scoring,
         revision: state.revision + 1,
+        record: sgf.Record(
+          ..state.record,
+          finished_at: Some(
+            list.fold(dict.values(state.ready_at), state.started_at, int.max)
+            + pass_grace_ms
+            - state.started_at,
+          ),
+        ),
       )
     False -> state
   }
@@ -127,12 +159,18 @@ pub fn play_at(
           let seconds =
             dict.get(state.cooldowns, name)
             |> result.unwrap(shared_game.base_cooldown(state.settings))
+          let assert Ok(seat) =
+            list.find(state.record.seats, fn(s) { s.player.username == name })
           Ok(
             State(
               ..state,
               board: board,
               ready_at: dict.insert(state.ready_at, name, now + seconds * 1000),
               revision: state.revision + 1,
+              record: sgf.Record(..state.record, moves: [
+                sgf.Move(seat.id, point, now - state.started_at),
+                ..state.record.moves
+              ]),
             ),
           )
         }
@@ -192,26 +230,54 @@ pub fn finish_scoring(
         Ok(dead) -> #(play_api.Estimated, dead)
         Error(_) -> #(play_api.Unavailable, [])
       }
+      let scores = go.score(go.remove_stones(state.board, dead_stones))
       State(
         ..state,
         scoring: scoring,
         dead_stones: dead_stones,
-        scores: go.score(go.remove_stones(state.board, dead_stones)),
+        scores: scores,
+        record: sgf.Record(
+          ..state.record,
+          scoring: case scoring {
+            play_api.Estimated -> "estimated"
+            _ -> "unassisted"
+          },
+          scores: dict.map_values(state.players, fn(name, _) {
+            dict.get(scores, name) |> result.unwrap(0)
+          }),
+          dead: dead_stones,
+        ),
         revision: state.revision + 1,
       )
     }
   }
 }
 
-fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
+fn persist(recording: Option(Subject(recorder.Message)), state: State) -> State {
+  case recording {
+    Some(subject) -> recorder.save(subject, state.record)
+    None -> Nil
+  }
+  state
+}
+
+fn handle_message(
+  state: State,
+  msg: Message,
+  recording: Option(Subject(recorder.Message)),
+) -> actor.Next(State, Message) {
   let now = now_ms()
-  let state = advance(state, now)
+  let advanced = advance(state, now)
+  let state = case advanced.revision != state.revision {
+    True -> persist(recording, advanced)
+    False -> advanced
+  }
   case msg {
     Play(name, point, reply) ->
       case play_at(state, name, point, now) {
         Ok(updated) -> {
           process.send(reply, Ok(Nil))
-          actor.continue(updated)
+          actor.continue(persist(recording, updated))
         }
         Error(error) -> {
           process.send(reply, Error(error))
@@ -222,7 +288,18 @@ fn handle_message(state: State, msg: Message) -> actor.Next(State, Message) {
       process.send(reply, snapshot_at(state, now))
       actor.continue(state)
     }
-    Scored(result) -> actor.continue(finish_scoring(state, result))
+    GetRecord(reply) -> {
+      process.send(reply, state.record)
+      actor.continue(state)
+    }
+    Scored(result) -> {
+      let scored = finish_scoring(state, result)
+      let scored = case scored.revision != state.revision {
+        True -> persist(recording, scored)
+        False -> scored
+      }
+      actor.continue(scored)
+    }
     Tick(subject) -> {
       case state.phase, state.scoring, state.scoring_started {
         shared_game.Started, _, _ -> {
@@ -256,9 +333,36 @@ pub fn start(
   settings: shared_game.Settings,
   cooldowns: Dict(String, Int),
 ) -> Subject(Message) {
+  start_actor(players, settings, cooldowns, None)
+}
+
+pub fn start_recorded(
+  id: String,
+  players: Dict(String, player.Player),
+  settings: shared_game.Settings,
+  cooldowns: Dict(String, Int),
+) -> Subject(Message) {
+  start_actor(players, settings, cooldowns, Some(id))
+}
+
+fn start_actor(
+  players: Dict(String, player.Player),
+  settings: shared_game.Settings,
+  cooldowns: Dict(String, Int),
+  id: Option(String),
+) -> Subject(Message) {
+  let state = new_state(players, settings, cooldowns, now_ms())
+  let state =
+    State(
+      ..state,
+      record: sgf.Record(..state.record, date: Some(recorder.today())),
+    )
+  let recording = option.map(id, fn(id) { recorder.start(id, state.record) })
   let assert Ok(actor) =
-    actor.new(new_state(players, settings, cooldowns, now_ms()))
-    |> actor.on_message(handle_message)
+    actor.new(state)
+    |> actor.on_message(fn(state, message) {
+      handle_message(state, message, recording)
+    })
     |> actor.start
   process.send(actor.data, Tick(actor.data))
   actor.data
@@ -274,4 +378,8 @@ pub fn play(
 
 pub fn get_game(subject: Subject(Message)) -> Snapshot {
   process.call(subject, 1000, fn(reply) { GetGame(reply) })
+}
+
+pub fn get_record(subject: Subject(Message)) -> sgf.Record {
+  process.call(subject, 1000, GetRecord)
 }

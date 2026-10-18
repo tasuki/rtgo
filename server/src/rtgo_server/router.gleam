@@ -8,6 +8,7 @@ import rtgo_server/game
 import rtgo_server/katago
 import rtgo_server/lobby
 import rtgo_server/players
+import rtgo_server/recorder
 import rtgo_server/router_utils.{allow_cors, json_response, json_response_obj}
 import rtgo_shared/auth
 import rtgo_shared/auth_api
@@ -15,6 +16,7 @@ import rtgo_shared/game as shared_game
 import rtgo_shared/go
 import rtgo_shared/lobby_api
 import rtgo_shared/play_api
+import rtgo_shared/sgf
 import wisp.{type Request, type Response}
 
 fn game_details(id: String, entry: lobby.Entry) -> lobby_api.GameDetails {
@@ -160,6 +162,32 @@ pub fn handle(
           )
         Error(_) ->
           json_response(404, [#("msg", json.string("404: Not Found"))])
+      }
+    }
+
+    Get, ["games", id, "sgf"] -> {
+      let recorded = case lobby.get_game(lobby_actor, id) {
+        Ok(lobby.Running(subject:, ..)) -> {
+          let record = game.get_record(subject)
+          Ok(#(recorder.filename(id, record), sgf.encode(record)))
+        }
+        _ -> recorder.read_named(id)
+      }
+      case recorded {
+        Ok(#(filename, text)) ->
+          wisp.response(200)
+          |> wisp.set_header(
+            "content-type",
+            "application/x-go-sgf; charset=utf-8",
+          )
+          |> wisp.set_header(
+            "content-disposition",
+            "attachment; filename=\"" <> filename <> "\"",
+          )
+          |> wisp.set_header("cache-control", "no-store")
+          |> wisp.string_body(text)
+        Error(_) ->
+          json_response(404, [#("msg", json.string("Recording not found"))])
       }
     }
 

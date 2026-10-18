@@ -8,6 +8,7 @@ import mist
 import rtgo_server/katago
 import rtgo_server/lobby
 import rtgo_server/players
+import rtgo_server/recorder
 import rtgo_server/router
 import rtgo_server/web
 import wisp/wisp_mist
@@ -27,6 +28,8 @@ pub fn main() -> Nil {
     envoy.get("SIGN_KEY") |> result.map(bit_array.from_string)
 
   let assert Ok(sign_key) = sign_key.hs256(sign_key_secret)
+  let assert Ok(_) = recorder.prepare()
+  logging.log(logging.Info, "Saving SGFs to " <> recorder.directory())
   let players_actor = players.start(sign_key)
   let lobby_actor = lobby.start()
   case katago.available() {

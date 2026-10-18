@@ -8,6 +8,7 @@ import gleam/set.{type Set}
 import rtgo_server/bot
 import rtgo_server/game
 import rtgo_server/log
+import rtgo_server/recorder
 import rtgo_shared/bot as shared_bot
 import rtgo_shared/game as shared_game
 import rtgo_shared/player
@@ -101,9 +102,9 @@ pub type Message {
 
 fn generate_new_id(state: State) -> String {
   let id = pronounceable.generate(4)
-  case dict.get(state.games, id) {
-    Ok(_) -> generate_new_id(state)
-    Error(_) -> id
+  case dict.has_key(state.games, id) || recorder.exists(id) {
+    True -> generate_new_id(state)
+    False -> id
   }
 }
 
@@ -297,7 +298,12 @@ fn handle_start_game(
           case dict.size(players) >= 2 {
             True -> {
               let subject =
-                game.start(players, settings, player_cooldowns(lobby))
+                game.start_recorded(
+                  id,
+                  players,
+                  settings,
+                  player_cooldowns(lobby),
+                )
               players
               |> dict.keys
               |> list.filter(shared_bot.is_bot)

@@ -33,19 +33,25 @@ fn api(req: wisp.Request) -> wisp.Response {
 }
 
 pub fn serves_frontend_for_root_and_spa_deep_links_test() {
-  list.each(["/", "/create", "/play/room", "/index.html"], fn(path) {
-    let response = web.handle(simulate.request(Get, path), directory, api)
-    should.equal(response.status, 200)
-    should.equal(
-      string.contains(simulate.read_body(response), "RTGO frontend fixture"),
-      True,
-    )
-    should.equal(
-      response.get_header(response, "content-type"),
-      Ok("text/html; charset=utf-8"),
-    )
-    should.equal(response.get_header(response, "cache-control"), Ok("no-cache"))
-  })
+  list.each(
+    ["/", "/create", "/play/room", "/replay", "/replay/room", "/index.html"],
+    fn(path) {
+      let response = web.handle(simulate.request(Get, path), directory, api)
+      should.equal(response.status, 200)
+      should.equal(
+        string.contains(simulate.read_body(response), "RTGO frontend fixture"),
+        True,
+      )
+      should.equal(
+        response.get_header(response, "content-type"),
+        Ok("text/html; charset=utf-8"),
+      )
+      should.equal(
+        response.get_header(response, "cache-control"),
+        Ok("no-cache"),
+      )
+    },
+  )
 }
 
 pub fn serves_assets_with_content_types_and_conditional_gets_test() {

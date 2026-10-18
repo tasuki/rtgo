@@ -111,6 +111,107 @@ pub fn lobby_refresh_does_not_change_the_view_even_when_empty_test() {
   })
 }
 
+pub fn lobby_groups_open_running_and_finished_games_test() {
+  let initial = model(app.CreateJoinGame)
+  let games = [
+    lobby_api.GameMetadata(
+      "waiting-room",
+      game.Negotiating,
+      1,
+      game.default_settings,
+    ),
+    lobby_api.GameMetadata(
+      "playing-room",
+      game.Started,
+      2,
+      game.default_settings,
+    ),
+    lobby_api.GameMetadata(
+      "completed-room",
+      game.Finished,
+      3,
+      game.default_settings,
+    ),
+  ]
+  let loaded =
+    step(
+      initial,
+      app.GamesLoaded(
+        initial.page_version,
+        Ok(lobby_api.ListGamesResponse(games)),
+      ),
+    )
+  let sections =
+    query.find_all(
+      app.view(loaded),
+      query.element(query.class("lobby-section")),
+    )
+  should.equal(list.length(sections), 3)
+  list.zip(sections, [
+    #("Open for joining", "waiting-room"),
+    #("In progress", "playing-room"),
+    #("Finished games", "completed-room"),
+  ])
+  |> list.each(fn(entry) {
+    let #(section, #(title, id)) = entry
+    let html = element.to_string(section)
+    should.equal(string.contains(html, "<h2>" <> title <> "</h2>"), True)
+    should.equal(
+      list.length(query.find_all(
+        section,
+        query.element(query.class("game-row")),
+      )),
+      1,
+    )
+    list.each(games, fn(game) {
+      should.equal(string.contains(html, game.id), game.id == id)
+    })
+  })
+  let empty =
+    step(
+      loaded,
+      app.GamesLoaded(loaded.page_version, Ok(lobby_api.ListGamesResponse([]))),
+    )
+  should.equal(
+    string.contains(
+      element.to_string(app.view(empty)),
+      "<h2>Finished games</h2><p>none</p>",
+    ),
+    True,
+  )
+}
+
+pub fn finished_lobby_row_opens_the_game_instead_of_joining_test() {
+  let initial = model(app.CreateJoinGame)
+  let loaded =
+    step(
+      initial,
+      app.GamesLoaded(
+        initial.page_version,
+        Ok(
+          lobby_api.ListGamesResponse([
+            lobby_api.GameMetadata(
+              "done",
+              game.Finished,
+              2,
+              game.default_settings,
+            ),
+          ]),
+        ),
+      ),
+    )
+  let clicked =
+    simulate.application(
+      fn(_) { #(None, effect.none()) },
+      fn(_, msg) { #(Some(msg), effect.none()) },
+      fn(_) { app.view(loaded) },
+    )
+    |> simulate.start(Nil)
+    |> simulate.event(query.element(query.class("game-row")), "click", [])
+    |> simulate.model
+  should.equal(clicked, Some(app.OpenGame("done")))
+}
+
 pub fn room_refresh_tracks_joins_and_start_without_blanking_the_room_test() {
   let model = model(app.Play("room"))
   let version = model.page_version

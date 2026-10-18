@@ -14,8 +14,12 @@ pub fn handle(
   case req.method, wisp.path_segments(req) {
     _, ["api", ..segments] ->
       api(request.Request(..req, path: "/" <> string.join(segments, "/")))
-    Get, [] | Get, ["create"] | Get, ["play", _] ->
-      serve(req, "index.html", directory, fn() { api(req) })
+    Get, []
+    | Get, ["create"]
+    | Get, ["play", _]
+    | Get, ["replay"]
+    | Get, ["replay", _]
+    -> serve(req, "index.html", directory, fn() { api(req) })
     Get, [file] -> {
       // All generated assets are flat. Reject separators/encoded traversal
       // before serve_static's percent-decoding; never expose files above here.

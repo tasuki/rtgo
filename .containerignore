@@ -2,4 +2,5 @@
 **/build
 **/erl_crash.dump
 **/.lustre
+**/data
 mise.local.toml

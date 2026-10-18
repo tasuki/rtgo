@@ -142,3 +142,13 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow
 @media screen and (max-width: 600px) {
   .game-row, .create-game { grid-template-columns: 1fr; }
 }
+
+#replay-page { margin-top: 20px; }
+.replay-board { width: min(100%, 65dvh); aspect-ratio: 1; margin: 0 auto; background: #CB5; }
+.replay-board svg { display: block; width: 100%; height: 100%; }
+.replay-controls { margin: 12px 0; }
+.replay-controls input { display: block; width: 100%; padding: 8px 0; }
+#sgf-source { display: block; width: 100%; box-sizing: border-box; margin: 12px 0;
+  font: inherit; resize: vertical; padding: 8px; }
+#replay-page details { margin-top: 24px; }
+#replay-page summary { cursor: pointer; }

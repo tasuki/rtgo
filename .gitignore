@@ -1,6 +1,9 @@
 # Mise
 mise.local.toml
 
+# Local game recordings
+data/
+
 # Gleam
 *.beam
 *.ez

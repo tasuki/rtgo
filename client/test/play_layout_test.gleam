@@ -306,4 +306,9 @@ pub fn finished_game_keeps_full_board_and_puts_scores_in_menu_test() {
     menu |> element.to_string |> string.contains("alice wins with 200 points."),
     True,
   )
+  let menu = element.to_string(menu)
+  should.equal(string.contains(menu, "href=\"/replay/room\""), True)
+  should.equal(string.contains(menu, "Replay game"), True)
+  should.equal(string.contains(menu, "https://rtgo.test/games/room/sgf"), True)
+  should.equal(string.contains(menu, "Download SGF"), True)
 }
