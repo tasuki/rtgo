@@ -207,9 +207,10 @@ shown while waiting, and clients keep polling until the result is ready.
 
 The lobby and waiting room refresh automatically every second. The lobby lists
 open, in-progress, and finished games separately. Click a finished game to open
-its final board, results, and replay/download controls. Finished games remain
-listed and accessible at their room URL until restart. Live rooms and account state
-are in memory; SGF recordings persist separately.
+its final board as a replay, with results in the menu and playback controls on
+the opposite edge. Finished games remain listed until restart; their room URLs
+can still open persisted recordings afterward. Live rooms and account state are
+in memory; SGF recordings persist separately.
 
 ### Recordings and replay
 
@@ -222,17 +223,21 @@ the game's start date in UTC (fixed even across midnight). Startup fails if the
 directory isn't writable; later write failures are logged. Saves are asynchronous,
 so an abrupt kill can lose the most recent queued updates.
 
-After a game ends, its game-info and result menu panels offer **Replay game** and
-**Download SGF** immediately, even while scoring is pending. The replay page has
-Start/Previous/Next/End controls and a move slider, preserves each player's color,
-and reconstructs captures. Final scoring overlays appear only at the end.
+When a game ends (or you open a finished game), its fullscreen board automatically
+becomes a replay at the final position, without changing URLs. Controls sit on the
+right in landscape and along the bottom in portrait, opposite the general menu:
+a move slider and Start/Previous/Play–Stop/Next/End buttons. Play follows the original
+move timestamps; playing from the end restarts the recording. Each player's color
+and captures are preserved. Final scoring overlays appear only at the end; pending
+scores update automatically without interrupting playback. **Download SGF** remains
+available in the menu. Keyboard shortcuts: **← / →** for the previous/next move,
+**Space** to play/pause. These also work with the move slider focused; text fields
+retain their native keys.
 
-To replay an older file, choose **Replay an SGF recording** in the lobby (or open
-`/replay`), paste its contents, and click **Load SGF**. Imports stay in the browser;
+To replay a file, expand **Import an SGF recording** in the lobby, paste its
+contents, and click **Load SGF** to use the same fullscreen board. Imports stay in the browser;
 no server upload or login is required. This accepts RTGO version-1 recordings,
 not arbitrary third-party Go SGFs. Malformed or unsupported files show an error.
-Saved `/replay/<room-id>` links also work after server restart, without restoring
-the original live room. Reload a replay opened during scoring to get the final score.
 
 For a host-directory mount instead of the named Podman volume:
 

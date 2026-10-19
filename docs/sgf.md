@@ -83,7 +83,8 @@ node, in authoritative server order:
 The empty board is position zero. Replaying uses RTGO's shared multiplayer Go
 rules to reconstruct captures and enforce suicide/positional superko. Captures
 are not flattened into a black/white approximation. Cooldowns are descriptive
-metadata in the replay, not wall-clock waits. At the last position the UI can
+metadata in the replay; realtime playback follows the recorded move timestamps,
+not a reconstruction of cooldown timers. At the last position the UI can
 show the recorded scoring exclusions and area shading; earlier positions show
 only the actual played board.
 
@@ -94,7 +95,7 @@ working directory; the container uses `/data/sgf`). Startup checks writability.
 Each started game gets `YYYY-MM-DD-<room-id>.sgf`, for example
 `2026-10-18-four.sgf`. The UTC start date is fixed for all subsequent saves and
 downloads, even if play/scoring crosses midnight. Archive lookup accepts only
-this date-prefixed format; room/replay URLs still use just the game code.
+this date-prefixed format; game URLs still use just the game code.
 A per-game recorder process writes a complete snapshot to
 `YYYY-MM-DD-<room-id>.sgf.tmp`, then atomically renames it, at start,
 after each accepted move or explicit pass, at finish, and after scoring. Rejections and polls do
@@ -109,17 +110,26 @@ and account sessions are still in memory; recordings do not restore games.
 
 - `GET /api/games/<id>/sgf` downloads the current in-memory recording or a saved
   file after restart. Standalone development also supports the unprefixed route.
-- Finished games offer **Replay game** and **Download SGF** in their game/result
-  menu panels. `/replay/<id>` fetches a recording and opens the replay viewer.
-- `/replay` accepts a pasted SGF, entirely client-side. It supports our version-1
+- Finished games automatically become fullscreen replays at `/play/<id>`, starting
+  at the final position. This also works for archived recordings after restart.
+  **Download SGF** stays in the game/result menu panels.
+- The lobby's **Import an SGF recording** accepts a pasted SGF, entirely client-side,
+  and opens it on the same fullscreen board. It supports our version-1
   recordings, not arbitrary third-party Go SGFs, setup stones, variations, or
   collections. Unsupported/malformed input is rejected, not silently flattened.
-- The viewer has Start, Previous, Next, End, and a move slider; it displays the
-  move's player, coordinate, and timestamp, the timing mode and parameters,
-  roster/handicaps, and recorded
-  final scores. Empty and interrupted recordings are replayable too.
+- Replays share the live game's fullscreen board. The opposite-side control strip
+  is vertical on the right in landscape, horizontal at the bottom in portrait.
+  It has a move slider and Start, Previous, Play/Stop, Next, End buttons. Playback
+  uses original timestamps, including simultaneous moves, and stops at the end.
+  Playing from the end restarts at position zero; seeking stops playback.
+  Left/right arrows step through moves; Space plays/pauses, including when the
+  move slider is focused. Shortcuts do not override text editing or native Space
+  activation on buttons/links.
+- The slider describes the move's player, coordinate, and timestamp; the general
+  menu holds timing parameters, roster/handicaps, and recorded final scores.
+  Empty and interrupted recordings are replayable too.
 
 The importer limits input to 1 MB and 10,000 moves, rejects duplicate properties,
 invalid rosters/coordinates, unknown seats, decreasing timestamps and illegal
-moves. A replay URL loads once; if opened while scoring is pending, reload it
-later to fetch the scored recording.
+moves. Finished live rooms continue polling while scoring is pending, refreshing
+the replay's scoring metadata without changing the playback position.

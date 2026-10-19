@@ -250,11 +250,19 @@ pub fn room_refresh_tracks_joins_and_start_without_blanking_the_room_test() {
       ),
     )
   should.equal(missing.current_game, None)
-  should.equal(missing.loading_game, False)
-  should.equal(
-    missing.load_error,
-    Some("Game not found. It may have been cancelled."),
-  )
+  // A missing live room may still have a persisted recording after restart.
+  should.equal(missing.loading_game, True)
+  should.equal(missing.load_error, None)
+  let missing_recording =
+    step(
+      missing,
+      app.SgfLoaded(
+        version,
+        Error(rsvp.HttpError(response.new(404) |> response.set_body(""))),
+      ),
+    )
+  should.equal(missing_recording.loading_game, False)
+  should.not_equal(missing_recording.replay.error, None)
 }
 
 pub fn navigation_discards_old_responses_actions_and_timers_even_on_revisit_test() {

@@ -6,6 +6,8 @@ import gleam/int
 import gleam/list
 import gleam/option.{type Option, None, Some}
 import lustre/attribute
+import lustre/element.{type Element}
+import lustre/element/html
 import lustre/element/svg
 import lustre/event
 import rtgo_shared/go
@@ -14,6 +16,18 @@ import rtgo_shared/player
 // View
 
 const stroke = "#0009"
+
+pub fn fullscreen(
+  board: Element(msg),
+  overlays: List(Element(msg)),
+) -> Element(msg) {
+  html.div([attribute.id("play-page")], [
+    html.div([attribute.id("board-container")], [
+      html.div([attribute.id("board")], [board]),
+    ]),
+    ..overlays
+  ])
+}
 
 pub fn view(
   game: go.Game,

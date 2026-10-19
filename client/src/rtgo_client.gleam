@@ -43,7 +43,6 @@ pub type Route {
   PlayerInfo
   CreateJoinGame
   Play(game_id: String)
-  Replay(record_id: Option(String))
 }
 
 pub type Model {
@@ -164,8 +163,6 @@ fn route_from_uri(uri: Uri) -> Route {
     [] -> PlayerInfo
     ["create"] -> CreateJoinGame
     ["play", game_id] -> Play(game_id)
-    ["replay"] -> Replay(None)
-    ["replay", id] -> Replay(Some(id))
     _ -> PlayerInfo
   }
 }
@@ -175,8 +172,6 @@ fn route_to_str(route: Route) -> String {
     PlayerInfo -> "/"
     CreateJoinGame -> "/create"
     Play(game_id) -> "/play/" <> game_id
-    Replay(None) -> "/replay"
-    Replay(Some(id)) -> "/replay/" <> id
   }
 }
 
@@ -238,6 +233,7 @@ pub type Msg {
   RouteChanged(Route)
   ReplayMsg(replay.Msg)
   SgfLoaded(Int, Result(String, rsvp.Error))
+  ReplayTick(Int, Int, Timestamp)
   Refresh(Int)
   PingRequested
   PingResponded(Result(Duration, rsvp.Error))
@@ -299,6 +295,39 @@ pub fn wait(milliseconds: Int, msg: msg) -> Effect(msg) {
   })
 }
 
+fn load_recording(model: Model, id: String) -> Effect(Msg) {
+  rsvp.get(
+    model.server_url <> "/games/" <> uri.percent_encode(id) <> "/sgf",
+    rsvp.expect_ok_response(fn(res) {
+      SgfLoaded(
+        model.page_version,
+        result.map(res, fn(response) { response.body }),
+      )
+    }),
+  )
+}
+
+fn recording_needs_score(model: Model) -> Bool {
+  case model.replay.replay {
+    Some(recording) -> recording.record.scoring == "pending"
+    None -> False
+  }
+}
+
+fn replay_tick(model: Model) -> Effect(Msg) {
+  effect.from(fn(dispatch) {
+    promise.wait(16)
+    |> promise.tap(fn(_) {
+      dispatch(ReplayTick(
+        model.page_version,
+        model.replay.generation,
+        timestamp.system_time(),
+      ))
+    })
+    Nil
+  })
+}
+
 fn refresh_later(model: Model) -> Effect(Msg) {
   // Schedule after completion rather than on a fixed interval: at most one poll
   // is in flight. Old responses and timers are ignored after navigation.
@@ -350,6 +379,7 @@ fn action_error(error: rsvp.Error) -> String {
 pub fn update(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
   let stale = case msg {
     SgfLoaded(version, _)
+    | ReplayTick(version, _, _)
     | Refresh(version)
     | GamesLoaded(version, _)
     | GameLoaded(version, _)
@@ -423,17 +453,70 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         )
       update(model, Refresh(model.page_version))
     }
-    ReplayMsg(msg) -> #(
-      Model(..model, replay: replay.update(model.replay, msg)),
-      effect.none(),
-    )
+    ReplayMsg(msg) -> {
+      let updated = replay.update(model.replay, msg)
+      let changed = updated.generation != model.replay.generation
+      let imported = case msg {
+        replay.Load -> updated.error == None && updated.replay != None
+        _ -> False
+      }
+      let model =
+        Model(
+          ..model,
+          replay: updated,
+          page_version: model.page_version
+            + case imported {
+              True -> 1
+              False -> 0
+            },
+          loading_lobby: case imported {
+            True -> False
+            False -> model.loading_lobby
+          },
+        )
+      #(model, case updated.playing && changed {
+        True -> replay_tick(model)
+        False -> effect.none()
+      })
+    }
+    ReplayTick(_, generation, now) -> {
+      let updated = replay.update(model.replay, replay.Tick(generation, now))
+      let model = Model(..model, replay: updated)
+      #(model, case updated.playing && generation == updated.generation {
+        True -> replay_tick(model)
+        False -> effect.none()
+      })
+    }
     SgfLoaded(_, response) -> {
       let replay = case response {
         Ok(source) -> replay.load(model.replay, source)
         Error(error) ->
           replay.Model(..model.replay, error: Some(action_error(error)))
       }
-      #(Model(..model, replay: replay, loading_game: False), effect.none())
+      let replay = case model.route, response, model.replay.replay {
+        Play(_), Ok(_), None -> replay.update(replay, replay.End)
+        Play(_), Ok(_), Some(_) ->
+          replay.Model(
+            ..model.replay,
+            source: replay.source,
+            replay: replay.replay,
+            error: replay.error,
+          )
+        _, _, _ -> replay
+      }
+      let model = Model(..model, replay: replay, loading_game: False)
+      let score_ready =
+        model.live |> option.map(result_ready) |> option.unwrap(False)
+      let retry = case model.route, response {
+        Play(_), Error(_) if model.current_game != None -> refresh_later(model)
+        Play(_), Ok(_) if score_ready ->
+          case recording_needs_score(model) {
+            True -> wait(250, BoardRefresh(model.page_version))
+            False -> effect.none()
+          }
+        _, _ -> effect.none()
+      }
+      #(model, retry)
     }
     Refresh(_) if model.loading_lobby || model.loading_game -> #(
       model,
@@ -441,24 +524,13 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     )
     Refresh(_) ->
       case model.route {
+        CreateJoinGame if model.replay.replay != None -> #(model, effect.none())
         CreateJoinGame -> #(
           Model(..model, loading_lobby: True),
           load_lobby_games(model),
         )
         Play(id) -> #(Model(..model, loading_game: True), load_game(model, id))
-        Replay(Some(id)) -> #(
-          Model(..model, loading_game: True),
-          rsvp.get(
-            model.server_url <> "/games/" <> uri.percent_encode(id) <> "/sgf",
-            rsvp.expect_ok_response(fn(res) {
-              SgfLoaded(
-                model.page_version,
-                result.map(res, fn(response) { response.body }),
-              )
-            }),
-          ),
-        )
-        Replay(None) | PlayerInfo -> #(model, effect.none())
+        PlayerInfo -> #(model, effect.none())
       }
     PingRequested -> #(model, ping_server(model.server_url))
     PingResponded(duration_res) -> #(
@@ -752,20 +824,32 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
         Ok(lobby_api.GetGameResponse(details))
           if details.phase != shared_game.Negotiating
         -> update(model, BoardRefresh(model.page_version))
+        Error(rsvp.HttpError(res)) if res.status == 404 ->
+          case model.route {
+            Play(id) -> #(
+              Model(..model, loading_game: True, load_error: None),
+              load_recording(model, id),
+            )
+            _ -> #(model, poll)
+          }
         _ -> #(model, poll)
       }
     }
     BoardRefresh(_) ->
       case model.route, model.loading_board {
-        Play(id), False -> #(
-          Model(..model, loading_board: True),
-          rsvp.send(
-            play_api.state_request(model.server_url, id),
-            rsvp.expect_json(play_api.state_decoder(), fn(res) {
-              BoardLoaded(model.page_version, res)
-            }),
-          ),
-        )
+        Play(id), False ->
+          case model.replay.replay == None || recording_needs_score(model) {
+            False -> #(model, effect.none())
+            True -> #(
+              Model(..model, loading_board: True),
+              rsvp.send(
+                play_api.state_request(model.server_url, id),
+                rsvp.expect_json(play_api.state_decoder(), fn(res) {
+                  BoardLoaded(model.page_version, res)
+                }),
+              ),
+            )
+          }
         _, _ -> #(model, effect.none())
       }
     BoardLoaded(_, response) -> {
@@ -785,7 +869,22 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           effect.none()
         _ -> wait(250, BoardRefresh(model.page_version))
       }
-      #(model, effect.batch([poll, premove_effect]))
+      let needs_recording =
+        model.replay.replay == None
+        || {
+          recording_needs_score(model)
+          && case model.live {
+            Some(state) -> result_ready(state)
+            None -> False
+          }
+        }
+      let #(model, recording) = case model.route, model.live {
+        Play(id), Some(state)
+          if state.finished && needs_recording && !model.loading_game
+        -> #(Model(..model, loading_game: True), load_recording(model, id))
+        _, _ -> #(model, effect.none())
+      }
+      #(model, effect.batch([poll, premove_effect, recording]))
     }
     PointHovered(point) -> #(Model(..model, hovered: point), effect.none())
     ToggleMenu(key) -> #(
@@ -1157,10 +1256,11 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
     PlayerCooldownSet(_, _, _, Error(error)) ->
       action_failed(model, action_error(error))
     OpenGame(id) -> #(model, modem.push(route_to_str(Play(id)), None, None))
-    BackToLobby -> #(
-      model,
-      modem.push(route_to_str(CreateJoinGame), None, None),
-    )
+    BackToLobby ->
+      case model.route {
+        CreateJoinGame -> update(model, RouteChanged(CreateJoinGame))
+        _ -> #(model, modem.push(route_to_str(CreateJoinGame), None, None))
+      }
   }
 }
 
@@ -1686,7 +1786,7 @@ fn view_lobby(model: Model) -> Element(Msg) {
       None -> html.text("")
     },
     view_errors(model),
-    html.a([attribute.href("/replay")], [html.text("Replay an SGF recording")]),
+    element.map(replay.importer(model.replay), ReplayMsg),
     view_create_form(model),
     case
       model.loading_lobby && !model.lobby_loaded && model.load_error == None
@@ -1926,43 +2026,52 @@ fn view_game_room(model: Model, details: lobby_api.GameDetails) -> Element(Msg) 
 }
 
 fn view_play(model: Model) -> Element(Msg) {
-  case model.current_game {
-    Some(details) ->
-      case details.phase {
-        shared_game.Negotiating -> view_game_room(model, details)
-        _ ->
-          html.div([attribute.id("play-page")], [
-            html.div([attribute.id("board-container")], [
-              html.div([attribute.id("board")], [
-                board.view_with_drag(
-                  model.game,
-                  model.live
-                    |> option.map(fn(s) { s.dead_stones })
-                    |> option.unwrap([]),
-                  final_area(model.live),
-                  selectable_player(model),
-                  model.hovered,
-                  model.premove,
-                  PointHovered,
-                  PlayPoint,
-                  CancelPremove,
-                  is_drag(model),
-                  DragPoints,
-                ),
-              ]),
-            ]),
-            view_countdown_bars(model),
-          ])
-      }
-    None ->
+  case model.replay.replay, model.current_game {
+    None, Some(details) if details.phase == shared_game.Negotiating ->
+      view_game_room(model, details)
+    None, None ->
       html.div([attribute.id("page-container"), attribute.class("lobby-page")], [
         html.button([event.on_click(BackToLobby)], [html.text("Back to lobby")]),
         view_errors(model),
+        case model.replay.error {
+          Some(message) ->
+            html.p(
+              [attribute.class("error"), attribute.attribute("role", "alert")],
+              [html.text(message)],
+            )
+          None -> html.text("")
+        },
         case model.loading_game && model.load_error == None {
           True -> html.p([], [html.text("Loading...")])
           False -> html.text("")
         },
       ])
+    _, _ -> {
+      let #(game_board, overlays) = case model.replay.replay {
+        Some(_) -> #(element.map(replay.board_view(model.replay), ReplayMsg), [
+          element.map(replay.controls(model.replay), ReplayMsg),
+        ])
+        None -> #(
+          board.view_with_drag(
+            model.game,
+            model.live
+              |> option.map(fn(s) { s.dead_stones })
+              |> option.unwrap([]),
+            final_area(model.live),
+            selectable_player(model),
+            model.hovered,
+            model.premove,
+            PointHovered,
+            PlayPoint,
+            CancelPremove,
+            is_drag(model),
+            DragPoints,
+          ),
+          [view_countdown_bars(model)],
+        )
+      }
+      board.fullscreen(game_board, overlays)
+    }
   }
 }
 
@@ -2060,7 +2169,6 @@ fn view_recording_actions(model: Model) -> Element(Msg) {
   case model.route, model.live {
     Play(id), Some(state) if state.finished ->
       html.div([attribute.class("game-actions")], [
-        html.a([attribute.href("/replay/" <> id)], [html.text("Replay game")]),
         html.a(
           [
             attribute.href(model.server_url <> "/games/" <> id <> "/sgf"),
@@ -2279,6 +2387,31 @@ fn view_menu(model: Model) -> Element(Msg) {
     _, _, _ -> False
   }
   case playing {
+    False if model.replay.replay != None ->
+      html.div(
+        [
+          attribute.id("menu"),
+          attribute.class("playing-menu"),
+          attribute.style("--menu-count", "3"),
+        ],
+        [
+          menu_popover(model, "game", "!", "Replay info", "", [], [
+            element.map(replay.information(model.replay), ReplayMsg),
+            view_replay_download(model),
+          ]),
+          html.div([attribute.class("item")], [
+            html.button(
+              [
+                attribute.class("icon"),
+                attribute.attribute("aria-label", "Back to lobby"),
+                event.on_click(BackToLobby),
+              ],
+              [html.text("↩")],
+            ),
+          ]),
+          view_menu_item("ping " <> ping_class, ping, "Connection round trip"),
+        ],
+      )
     False ->
       html.div([attribute.id("menu")], [
         view_menu_item("", "!", "menu"),
@@ -2417,6 +2550,19 @@ fn view_menu(model: Model) -> Element(Msg) {
                 html.strong([], [html.text(title)]),
                 view_errors(model),
                 view_live_status(model),
+                case model.replay.replay, model.replay.error {
+                  Some(_), _ ->
+                    element.map(replay.position(model.replay), ReplayMsg)
+                  None, Some(message) ->
+                    html.p(
+                      [
+                        attribute.class("error"),
+                        attribute.attribute("role", "alert"),
+                      ],
+                      [html.text(message)],
+                    )
+                  _, _ -> html.text("")
+                },
               ],
             ),
             html.div([attribute.class("item")], [
@@ -2500,37 +2646,35 @@ fn view_countdown_bars(model: Model) -> Element(Msg) {
   }
 }
 
+fn view_replay_download(model: Model) -> Element(Msg) {
+  case model.route {
+    Play(id) ->
+      html.a(
+        [
+          attribute.href(
+            model.server_url <> "/games/" <> uri.percent_encode(id) <> "/sgf",
+          ),
+          attribute.attribute("download", ""),
+        ],
+        [html.text("Download SGF")],
+      )
+    _ -> html.text("")
+  }
+}
+
 pub fn view(model: Model) -> Element(Msg) {
-  html.div([attribute.id("container")], [
+  let shortcuts = case model.replay.replay {
+    Some(_) -> [
+      attribute.tabindex(-1),
+      attribute.autofocus(True),
+      replay.on_keydown(ReplayMsg),
+    ]
+    None -> []
+  }
+  html.div([attribute.id("container"), ..shortcuts], [
     view_menu(model),
     case model.route, model.player {
-      Replay(_), _ ->
-        html.div(
-          [attribute.id("page-container"), attribute.class("lobby-page")],
-          [
-            html.a([attribute.href("/create")], [html.text("Back to lobby")]),
-            case model.route {
-              Replay(Some(id)) ->
-                html.a(
-                  [
-                    attribute.href(
-                      model.server_url
-                      <> "/games/"
-                      <> uri.percent_encode(id)
-                      <> "/sgf",
-                    ),
-                    attribute.attribute("download", ""),
-                  ],
-                  [html.text("Download SGF")],
-                )
-              _ -> html.text("")
-            },
-            element.map(
-              replay.view(model.replay, model.loading_game),
-              ReplayMsg,
-            ),
-          ],
-        )
+      _, _ if model.replay.replay != None -> view_play(model)
       _, player_info.LoggedIn(name, _) ->
         case model.route {
           PlayerInfo ->
@@ -2542,15 +2686,23 @@ pub fn view(model: Model) -> Element(Msg) {
             ])
           CreateJoinGame -> view_lobby(model)
           Play(_) -> view_play(model)
-          Replay(_) -> html.text("")
         }
       _, _ ->
-        player_info.view(
-          model.player,
-          model.preferred_color,
-          PreferredColorChanged,
-          Register,
-        )
+        html.div([], [
+          player_info.view(
+            model.player,
+            model.preferred_color,
+            PreferredColorChanged,
+            Register,
+          ),
+          case model.route {
+            CreateJoinGame ->
+              html.div([attribute.class("lobby-import")], [
+                element.map(replay.importer(model.replay), ReplayMsg),
+              ])
+            _ -> html.text("")
+          },
+        ])
     },
   ])
 }
