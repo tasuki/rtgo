@@ -1,11 +1,13 @@
 import gleam/bit_array
 import gleam/dict
+import gleam/erlang/process
 import gleam/http.{Options, Post}
 import gleam/http/request
 import gleam/http/response
 import gleam/list
 import gleam/time/duration
 import gleeunit/should
+import rtgo_server/game as running_game
 import rtgo_server/lobby
 import rtgo_server/players
 import rtgo_server/test_support.{read_json, test_sign_key}
@@ -51,6 +53,40 @@ fn details(send: Send, id: String) -> lobby_api.GameDetails {
     |> send
     |> read_json(lobby_api.get_game_response_decoder)
   game
+}
+
+pub fn finished_games_are_listed_by_start_time_newest_first_test() {
+  let users = players.start(test_sign_key())
+  let rooms = lobby.start()
+  let settings = game.Settings(9, game.TwoPlayerGame, game.DragDerby)
+  list.each(list.range(1, 3), fn(_) {
+    let assert Ok(id) = lobby.create_game(rooms, "host", settings)
+    let assert Ok(True) = lobby.join_game(rooms, id, "guest")
+  })
+  // Start in the dictionary's original order, so reversing it is observably
+  // different. All starts occur within the same minute in ordinary test runs.
+  let ids =
+    rooms |> lobby.list_games |> dict.to_list |> list.map(fn(entry) { entry.0 })
+  list.each(ids, fn(id) {
+    let assert Ok(True) = lobby.start_game(rooms, id, "host")
+    process.sleep(2)
+  })
+  // Finish in the opposite order: sorting must use start dates, not end dates.
+  list.each(list.reverse(ids), fn(id) {
+    let assert Ok(lobby.Running(subject:, ..)) = lobby.get_game(rooms, id)
+    let assert Ok(_) = running_game.pass(subject, "host")
+    let assert Ok(_) = running_game.pass(subject, "guest")
+  })
+  let lobby_api.ListGamesResponse(games) =
+    lobby_api.games_request(url)
+    |> test_support.send(users, rooms)
+    |> read_json(lobby_api.list_games_response_decoder)
+  should.equal(list.map(games, fn(game) { game.phase }), [
+    game.Finished,
+    game.Finished,
+    game.Finished,
+  ])
+  should.equal(list.map(games, fn(game) { game.id }), list.reverse(ids))
 }
 
 pub fn lobby_lifecycle_through_client_api_test() {

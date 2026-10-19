@@ -1,6 +1,7 @@
 import gleam/dict
 import gleam/int
 import gleam/list
+import gleam/option.{None, Some}
 import gleeunit/should
 import rtgo_server/game
 import rtgo_server/lobby
@@ -20,7 +21,12 @@ pub fn create_game_is_listed_test() {
   should.not_equal(id, "")
   should.equal(
     dict.get(lobby.list_games(actor), id),
-    Ok(lobby.Metadata(shared_game.Negotiating, 1, shared_game.default_settings)),
+    Ok(lobby.Metadata(
+      shared_game.Negotiating,
+      1,
+      shared_game.default_settings,
+      None,
+    )),
   )
 }
 
@@ -63,7 +69,12 @@ pub fn two_player_game_requires_two_and_retains_settings_when_started_test() {
   })
   should.equal(
     dict.get(lobby.list_games(actor), id),
-    Ok(lobby.Metadata(shared_game.Started, 2, settings)),
+    Ok(lobby.Metadata(
+      shared_game.Started,
+      2,
+      settings,
+      Some(game.get_metadata(subject).started_at),
+    )),
   )
 }
 

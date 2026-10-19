@@ -29,7 +29,8 @@ RTEND[14000]RTSCORING[unassisted]RTSCORE[p1:1][p2:1][p3:1]
   parameters are rejected, not silently treated as strict cooldown.
   This additive metadata does not change the sequential move-node contract;
   Simul Slaughter will require a separate, explicitly agreed recording design.
-- `DT[YYYY-MM-DD]`: the game's start date in **UTC**, also used in its filename.
+- `DT[YYYY-MM-DD]`: the game's start date in **UTC**. The filename additionally
+  includes the UTC start hour and minute; `DT` remains date-only.
   Date metadata does not affect move playback.
 - `SZ[n]`: square board size. Production creates 9, 13, or 19; the importer
   accepts 2–25.
@@ -92,12 +93,14 @@ only the actual played board.
 
 `SGF_DIR` selects the server directory (default `data/sgf`, relative to the server
 working directory; the container uses `/data/sgf`). Startup checks writability.
-Each started game gets `YYYY-MM-DD-<room-id>.sgf`, for example
-`2026-10-18-four.sgf`. The UTC start date is fixed for all subsequent saves and
-downloads, even if play/scoring crosses midnight. Archive lookup accepts only
-this date-prefixed format; game URLs still use just the game code.
+Each started game gets `YYYY-MM-DD-HHMM-<room-id>.sgf`, for example
+`2026-10-18-1234-four.sgf`. The UTC start time, to the minute, is fixed for all
+subsequent saves and downloads, even if play/scoring crosses midnight. Archive
+lookup accepts only this timestamp-prefixed format, not date-only filenames;
+game URLs still use just the game code. The lobby lists finished games by start
+time, newest first (using the full timestamp, not just the filename's minute).
 A per-game recorder process writes a complete snapshot to
-`YYYY-MM-DD-<room-id>.sgf.tmp`, then atomically renames it, at start,
+`YYYY-MM-DD-HHMM-<room-id>.sgf.tmp`, then atomically renames it, at start,
 after each accepted move or explicit pass, at finish, and after scoring. Rejections and polls do
 not add moves. Temporary files are not recordings. Write failures are logged;
 the previous complete snapshot remains usable. Writes are asynchronous, so an

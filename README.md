@@ -210,7 +210,8 @@ open, in-progress, and finished games separately. Click a finished game to open
 its final board as a replay, with results in the menu and playback controls on
 the opposite edge. Finished games remain listed until restart; their room URLs
 can still open persisted recordings afterward. Live rooms and account state are
-in memory; SGF recordings persist separately.
+in memory; SGF recordings persist separately. Finished games are listed newest-first
+by their start time.
 
 ### Recordings and replay
 
@@ -218,8 +219,9 @@ Every started game is recorded, including its timing mode and parameters,
 multiplayer, handicaps, move timestamps, and final scoring/dead-stone annotations. The server saves an atomic SGF snapshot
 at start, after accepted moves, when play ends, and after scoring. `SGF_DIR`
 selects the directory: `data/sgf` by default, `/data/sgf` in the image. Files and
-downloads are named `YYYY-MM-DD-<game-code>.sgf`, e.g. `2026-10-18-four.sgf`, using
-the game's start date in UTC (fixed even across midnight). Startup fails if the
+downloads are named `YYYY-MM-DD-HHMM-<game-code>.sgf`, e.g.
+`2026-10-18-1234-four.sgf`, using the game's start time in UTC to the minute
+(fixed even across midnight). Startup fails if the
 directory isn't writable; later write failures are logged. Saves are asynchronous,
 so an abrupt kill can lose the most recent queued updates.
 

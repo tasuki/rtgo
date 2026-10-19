@@ -2,9 +2,11 @@ import gleam/dict.{type Dict}
 import gleam/erlang/process.{type Subject}
 import gleam/int
 import gleam/list
+import gleam/option.{type Option, None, Some}
 import gleam/otp/actor
 import gleam/result
 import gleam/set.{type Set}
+import gleam/time/timestamp
 import rtgo_server/bot
 import rtgo_server/game
 import rtgo_server/log
@@ -42,6 +44,7 @@ pub type Metadata {
     phase: shared_game.GamePhase,
     player_count: Int,
     settings: shared_game.Settings,
+    started_at: Option(timestamp.Timestamp),
   )
 }
 
@@ -148,11 +151,18 @@ fn metadata(entry: Entry) -> Metadata {
         phase: shared_game.Negotiating,
         player_count: dict.size(players),
         settings: settings,
+        started_at: None,
       )
     }
     Running(subject:, settings:, ..) -> {
-      let game.Metadata(phase:, player_count:) = game.get_metadata(subject)
-      Metadata(phase: phase, player_count: player_count, settings: settings)
+      let game.Metadata(phase:, player_count:, started_at:) =
+        game.get_metadata(subject)
+      Metadata(
+        phase: phase,
+        player_count: player_count,
+        settings: settings,
+        started_at: Some(started_at),
+      )
     }
   }
 }

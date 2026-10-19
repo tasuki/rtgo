@@ -56,7 +56,9 @@ pub fn polling_does_not_remove_authoritative_superko_history_test() {
   let snapshot = game.get_game(subject)
   should.equal(set.size(snapshot.board.history), 0)
   should.equal(set.size(snapshot.live.board.history), 0)
-  should.equal(game.get_metadata(subject), game.Metadata(settings.Started, 2))
+  let metadata = game.get_metadata(subject)
+  should.equal(metadata.phase, settings.Started)
+  should.equal(metadata.player_count, 2)
   should.equal(
     game.play(subject, "bob", #(1, 1)),
     Error(game.InvalidMove(go.Ko)),
@@ -66,9 +68,14 @@ pub fn polling_does_not_remove_authoritative_superko_history_test() {
 
 pub fn metadata_reports_phase_changes_without_a_board_snapshot_test() {
   let subject = game.start(players(), config(), dict.new())
-  should.equal(game.get_metadata(subject), game.Metadata(settings.Started, 2))
+  let metadata = game.get_metadata(subject)
+  should.equal(metadata.phase, settings.Started)
+  should.equal(metadata.player_count, 2)
   should.equal(game.pass(subject, "alice"), Ok(Nil))
-  should.equal(game.get_metadata(subject), game.Metadata(settings.Started, 2))
+  should.equal(game.get_metadata(subject), metadata)
   should.equal(game.pass(subject, "bob"), Ok(Nil))
-  should.equal(game.get_metadata(subject), game.Metadata(settings.Finished, 2))
+  should.equal(
+    game.get_metadata(subject),
+    game.Metadata(..metadata, phase: settings.Finished),
+  )
 }

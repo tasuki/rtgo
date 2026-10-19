@@ -3,7 +3,6 @@
 import envoy
 import gleam/erlang/process.{type Subject}
 import gleam/list
-import gleam/option
 import gleam/otp/actor
 import gleam/result
 import gleam/string
@@ -39,22 +38,28 @@ pub fn safe_id(id: String) -> Bool {
   })
 }
 
-/// UTC date, captured once at game start rather than recomputed for each save.
-pub fn today() -> String {
-  timestamp.system_time()
-  |> timestamp.to_rfc3339(calendar.utc_offset)
-  |> string.slice(0, 10)
+fn valid_start_minute(prefix: String) -> Bool {
+  let date = string.slice(prefix, 0, 10)
+  let hour = string.slice(prefix, 11, 2)
+  let minute = string.slice(prefix, 13, 2)
+  string.byte_size(prefix) == 15
+  && string.slice(prefix, 10, 1) == "-"
+  && result.is_ok(timestamp.parse_rfc3339(
+    date <> "T" <> hour <> ":" <> minute <> ":00Z",
+  ))
 }
 
-fn valid_date(date: String) -> Bool {
-  string.byte_size(date) == 10
-  && result.is_ok(timestamp.parse_rfc3339(date <> "T00:00:00Z"))
-}
-
-pub fn filename(id: String, record: sgf.Record) -> String {
-  let date = option.unwrap(record.date, today())
-  let assert True = safe_id(id) && valid_date(date)
-  date <> "-" <> id <> ".sgf"
+/// Use the fixed UTC start minute for both saves and downloads.
+pub fn filename(id: String, started_at: timestamp.Timestamp) -> String {
+  let assert True = safe_id(id)
+  let utc = timestamp.to_rfc3339(started_at, calendar.utc_offset)
+  string.slice(utc, 0, 10)
+  <> "-"
+  <> string.slice(utc, 11, 2)
+  <> string.slice(utc, 14, 2)
+  <> "-"
+  <> id
+  <> ".sgf"
 }
 
 fn find_filename(directory: String, id: String) -> Result(String, Nil) {
@@ -67,9 +72,9 @@ fn find_filename(directory: String, id: String) -> Result(String, Nil) {
       files
       |> list.sort(string.compare)
       |> list.find(fn(file) {
-        string.byte_size(file) == 11 + string.byte_size(id) + 4
+        string.byte_size(file) == 16 + string.byte_size(id) + 4
         && string.ends_with(file, "-" <> id <> ".sgf")
-        && valid_date(string.slice(file, 0, 10))
+        && valid_start_minute(string.slice(file, 0, 15))
         && simplifile.is_file(directory <> "/" <> file) == Ok(True)
       })
     }
@@ -96,9 +101,10 @@ pub fn read(id: String) -> Result(String, Nil) {
 pub fn write_at(
   directory: String,
   id: String,
+  started_at: timestamp.Timestamp,
   record: sgf.Record,
 ) -> Result(Nil, simplifile.FileError) {
-  write_file(directory, filename(id, record), record)
+  write_file(directory, filename(id, started_at), record)
 }
 
 fn write_file(
@@ -111,10 +117,13 @@ fn write_file(
   simplifile.rename(path <> ".tmp", path)
 }
 
-pub fn start(id: String, record: sgf.Record) -> Subject(Message) {
-  let assert True = safe_id(id)
+pub fn start(
+  id: String,
+  started_at: timestamp.Timestamp,
+  record: sgf.Record,
+) -> Subject(Message) {
   let directory = directory()
-  let filename = filename(id, record)
+  let filename = filename(id, started_at)
   case simplifile.create_directory_all(directory) {
     Ok(_) -> Nil
     Error(error) ->

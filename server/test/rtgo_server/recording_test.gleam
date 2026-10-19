@@ -5,6 +5,10 @@ import gleam/int
 import gleam/list
 import gleam/option.{Some}
 import gleam/result
+import gleam/string
+import gleam/time/calendar
+import gleam/time/duration
+import gleam/time/timestamp
 import gleeunit/should
 import rtgo_server/game
 import rtgo_server/lobby
@@ -23,6 +27,11 @@ fn unique_id() -> String {
   "recordingtest" <> int.to_string(int.absolute_value(unique_integer()))
 }
 
+fn start_time() -> timestamp.Timestamp {
+  let assert Ok(time) = timestamp.parse_rfc3339("2026-10-18T12:34:56Z")
+  time
+}
+
 fn state() -> game.State {
   let players =
     dict.from_list([
@@ -39,6 +48,7 @@ fn state() -> game.State {
     )
   game.State(
     ..state,
+    started_utc: start_time(),
     record: sgf.Record(..state.record, date: Some("2026-10-18")),
   )
 }
@@ -76,7 +86,7 @@ pub fn sidecar_serializes_snapshots_and_old_recordings_download_without_a_room_t
   let initial = state()
   let assert Ok(played) = game.play_at(initial, "Carol", #(2, 2), 1500)
   let ended = played |> game.advance(30_000) |> game.finish_scoring(Error(Nil))
-  let writer = recorder.start(id, initial.record)
+  let writer = recorder.start(id, initial.started_utc, initial.record)
   recorder.save(writer, played.record)
   recorder.save(writer, ended.record)
   recorder.flush(writer)
@@ -92,7 +102,7 @@ pub fn sidecar_serializes_snapshots_and_old_recordings_download_without_a_room_t
     response.get_header(download, "content-type"),
     Ok("application/x-go-sgf; charset=utf-8"),
   )
-  let filename = "2026-10-18-" <> id <> ".sgf"
+  let filename = "2026-10-18-1234-" <> id <> ".sgf"
   should.equal(
     response.get_header(download, "content-disposition"),
     Ok("attachment; filename=\"" <> filename <> "\""),
@@ -104,13 +114,14 @@ pub fn sidecar_serializes_snapshots_and_old_recordings_download_without_a_room_t
 pub fn failed_snapshot_does_not_destroy_the_previous_recording_test() {
   let assert Ok(_) = recorder.prepare()
   let id = unique_id()
-  let path = recorder.directory() <> "/2026-10-18-" <> id <> ".sgf"
+  let path = recorder.directory() <> "/2026-10-18-1234-" <> id <> ".sgf"
   let r = state().record
-  let assert Ok(_) = recorder.write_at(recorder.directory(), id, r)
+  let assert Ok(_) =
+    recorder.write_at(recorder.directory(), id, start_time(), r)
   // Force the temporary-file write to fail, regardless of the test user's UID.
   let assert Ok(_) = simplifile.create_directory(path <> ".tmp")
   should.equal(
-    result.is_error(recorder.write_at(recorder.directory(), id, r)),
+    result.is_error(recorder.write_at(recorder.directory(), id, start_time(), r)),
     True,
   )
   should.equal(recorder.read(id), Ok(sgf.encode(r)))
@@ -118,21 +129,51 @@ pub fn failed_snapshot_does_not_destroy_the_previous_recording_test() {
   let assert Ok(_) = simplifile.delete(path)
 }
 
-pub fn filenames_use_the_fixed_start_date_even_for_later_updates_test() {
-  let record = state().record
-  should.equal(recorder.filename("four", record), "2026-10-18-four.sgf")
-  let finished = sgf.Record(..record, finished_at: Some(86_400_000))
-  should.equal(recorder.filename("four", finished), "2026-10-18-four.sgf")
+pub fn filenames_use_the_fixed_utc_start_minute_test() {
+  should.equal(
+    recorder.filename("four", start_time()),
+    "2026-10-18-1234-four.sgf",
+  )
+  let assert Ok(offset_start) =
+    timestamp.parse_rfc3339("2026-10-19T01:05:59+02:00")
+  should.equal(
+    recorder.filename("four", offset_start),
+    "2026-10-18-2305-four.sgf",
+  )
+  let assert Ok(midnight) = timestamp.parse_rfc3339("2026-10-18T00:01:59Z")
+  should.equal(recorder.filename("four", midnight), "2026-10-18-0001-four.sgf")
 }
 
-pub fn archive_lookup_only_accepts_date_prefixed_recordings_test() {
+pub fn later_updates_keep_the_same_filename_across_midnight_test() {
+  let assert Ok(_) = recorder.prepare()
+  let id = unique_id()
+  let initial = state()
+  let writer = recorder.start(id, initial.started_utc, initial.record)
+  let finished = sgf.Record(..initial.record, finished_at: Some(86_400_000))
+  recorder.save(writer, finished)
+  recorder.flush(writer)
+  let filename = recorder.filename(id, initial.started_utc)
+  should.equal(recorder.read_named(id), Ok(#(filename, sgf.encode(finished))))
+  let later = timestamp.add(initial.started_utc, duration.hours(24))
+  should.not_equal(recorder.filename(id, later), filename)
+  let assert Ok(_) = simplifile.delete(recorder.directory() <> "/" <> filename)
+}
+
+pub fn archive_lookup_only_accepts_start_minute_prefixed_recordings_test() {
   let assert Ok(_) = recorder.prepare()
   let id = unique_id()
   let files = [
     id <> ".sgf",
-    "2026-10-18-" <> id <> ".sgf.tmp",
-    "not-a-date-" <> id <> ".sgf",
+    "2026-10-18-" <> id <> ".sgf",
+    "2026-10-18-1234-" <> id <> ".sgf.tmp",
+    "not-a-date-1234-" <> id <> ".sgf",
     "2026-10-18-extra-" <> id <> ".sgf",
+    "2026-10-18-2400-" <> id <> ".sgf",
+    "2026-10-18-1260-" <> id <> ".sgf",
+    "2026-10-18-12ab-" <> id <> ".sgf",
+    "2026-13-18-1234-" <> id <> ".sgf",
+    "2026-10-18x1234-" <> id <> ".sgf",
+    "2026-10-18-1234-extra-" <> id <> ".sgf",
   ]
   list.each(files, fn(file) {
     let assert Ok(_) = simplifile.write(recorder.directory() <> "/" <> file, "")
@@ -173,11 +214,17 @@ pub fn live_download_has_the_latest_move_without_waiting_for_disk_test() {
   let assert Ok(req) = request.to("https://rtgo.test/games/" <> id <> "/sgf")
   let download = test_support.send(req, users, rooms)
   should.equal(download.status, 200)
-  let record = game.get_record(subject)
-  should.equal(record.date, Some(recorder.today()))
+  let #(started_at, record) = game.get_recording(subject)
+  should.equal(
+    record.date,
+    Some(
+      timestamp.to_rfc3339(started_at, calendar.utc_offset)
+      |> string.slice(0, 10),
+    ),
+  )
   should.equal(
     response.get_header(download, "content-disposition"),
-    Ok("attachment; filename=\"" <> recorder.filename(id, record) <> "\""),
+    Ok("attachment; filename=\"" <> recorder.filename(id, started_at) <> "\""),
   )
   let assert Ok(replay) = sgf.decode(download.body)
   should.equal(list.length(replay.record.moves), 1)

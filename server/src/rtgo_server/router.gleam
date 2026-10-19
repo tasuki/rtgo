@@ -3,7 +3,10 @@ import gleam/erlang/process
 import gleam/http.{Get, Post}
 import gleam/json
 import gleam/list
+import gleam/option.{None, Some}
+import gleam/order
 import gleam/string
+import gleam/time/timestamp
 import rtgo_server/game
 import rtgo_server/katago
 import rtgo_server/lobby
@@ -84,6 +87,23 @@ fn play_response(
   }
 }
 
+/// Preserve chronological ordering when the client groups games by phase.
+fn newest_first(
+  a: #(String, lobby.Metadata),
+  b: #(String, lobby.Metadata),
+) -> order.Order {
+  let by_date = case { a.1 }.started_at, { b.1 }.started_at {
+    Some(a), Some(b) -> timestamp.compare(b, a)
+    Some(_), None -> order.Lt
+    None, Some(_) -> order.Gt
+    None, None -> order.Eq
+  }
+  case by_date {
+    order.Eq -> string.compare(a.0, b.0)
+    _ -> by_date
+  }
+}
+
 pub fn handle(
   players_actor: process.Subject(players.Message),
   lobby_actor: process.Subject(lobby.Message),
@@ -150,8 +170,10 @@ pub fn handle(
       let games =
         lobby.list_games(lobby_actor)
         |> dict.to_list()
+        |> list.sort(newest_first)
         |> list.map(fn(entry) {
-          let #(id, lobby.Metadata(phase, player_count, settings)) = entry
+          let #(id, lobby.Metadata(phase:, player_count:, settings:, ..)) =
+            entry
           lobby_api.GameMetadata(id, phase, player_count, settings)
         })
       json_response_obj(
@@ -200,8 +222,8 @@ pub fn handle(
     Get, ["games", id, "sgf"] -> {
       let recorded = case lobby.get_game(lobby_actor, id) {
         Ok(lobby.Running(subject:, ..)) -> {
-          let record = game.get_record(subject)
-          Ok(#(recorder.filename(id, record), sgf.encode(record)))
+          let #(started_at, record) = game.get_recording(subject)
+          Ok(#(recorder.filename(id, started_at), sgf.encode(record)))
         }
         _ -> recorder.read_named(id)
       }

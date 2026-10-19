@@ -8,6 +8,8 @@ import gleam/otp/actor
 import gleam/result
 import gleam/set
 import gleam/string
+import gleam/time/calendar
+import gleam/time/timestamp
 import rtgo_server/adjudication
 import rtgo_server/recorder
 import rtgo_shared/game as shared_game
@@ -38,6 +40,7 @@ pub type State {
     scores: Dict(String, Int),
     dead_stones: List(go.Point),
     started_at: Int,
+    started_utc: timestamp.Timestamp,
     record: sgf.Record,
   )
 }
@@ -57,7 +60,11 @@ pub type Snapshot {
 
 /// Lobby listings need only these scalars, not positions or player records.
 pub type Metadata {
-  Metadata(phase: shared_game.GamePhase, player_count: Int)
+  Metadata(
+    phase: shared_game.GamePhase,
+    player_count: Int,
+    started_at: timestamp.Timestamp,
+  )
 }
 
 pub type Error {
@@ -72,7 +79,7 @@ pub type Message {
   Pass(player: String, reply: Subject(Result(Nil, Error)))
   GetGame(reply: Subject(Snapshot))
   GetMetadata(reply: Subject(Metadata))
-  GetRecord(reply: Subject(sgf.Record))
+  GetRecord(reply: Subject(#(timestamp.Timestamp, sgf.Record)))
   Tick(Subject(Message))
   Scored(Result(List(go.Point), Nil))
 }
@@ -106,6 +113,7 @@ pub fn new_state(
   cooldowns: Dict(String, Int),
   now: Int,
 ) -> State {
+  let started_utc = timestamp.system_time()
   State(
     players,
     go.new_game(settings.board_size),
@@ -127,6 +135,7 @@ pub fn new_state(
     dict.new(),
     [],
     now,
+    started_utc,
     sgf.Record(
       ..sgf.new(
         settings.board_size,
@@ -140,6 +149,10 @@ pub fn new_state(
               cooldown_ms(cooldowns, settings, p.username),
             )
           }),
+      ),
+      date: Some(
+        timestamp.to_rfc3339(started_utc, calendar.utc_offset)
+        |> string.slice(0, 10),
       ),
       time_settings: Some(settings.time_settings),
     ),
@@ -461,11 +474,14 @@ fn handle_message(
       actor.continue(state)
     }
     GetMetadata(reply) -> {
-      process.send(reply, Metadata(state.phase, dict.size(state.players)))
+      process.send(
+        reply,
+        Metadata(state.phase, dict.size(state.players), state.started_utc),
+      )
       actor.continue(state)
     }
     GetRecord(reply) -> {
-      process.send(reply, state.record)
+      process.send(reply, #(state.started_utc, state.record))
       actor.continue(state)
     }
     Scored(result) -> {
@@ -528,12 +544,10 @@ fn start_actor(
   id: Option(String),
 ) -> Subject(Message) {
   let state = new_state(players, settings, cooldowns, now_ms())
-  let state =
-    State(
-      ..state,
-      record: sgf.Record(..state.record, date: Some(recorder.today())),
-    )
-  let recording = option.map(id, fn(id) { recorder.start(id, state.record) })
+  let recording =
+    option.map(id, fn(id) {
+      recorder.start(id, state.started_utc, state.record)
+    })
   let assert Ok(actor) =
     actor.new(state)
     |> actor.on_message(fn(state, message) {
@@ -568,5 +582,11 @@ pub fn get_metadata(subject: Subject(Message)) -> Metadata {
 }
 
 pub fn get_record(subject: Subject(Message)) -> sgf.Record {
+  get_recording(subject).1
+}
+
+pub fn get_recording(
+  subject: Subject(Message),
+) -> #(timestamp.Timestamp, sgf.Record) {
   process.call(subject, 1000, GetRecord)
 }
