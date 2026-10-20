@@ -21,6 +21,16 @@ SIGN_KEY = "this.one.should.be.rather.very.long"
 
 ## All-in-one image (Podman)
 
+Pushing a Git tag (for example, `git push origin v1.0.0`) builds the image with
+GitHub Actions and publishes `ghcr.io/tasuki/rtgo:v1.0.0` (Linux amd64). Each image
+uses the Git tag as its container tag; no `latest` tag is published. The workflow
+uses GitHub's built-in token, so no registry secrets need to be configured. To
+allow anonymous pulls, set the package's visibility to **Public** on GitHub.
+
+Use a published image instead of building locally by replacing
+`localhost/rtgo:latest` below with `ghcr.io/tasuki/rtgo:v1.0.0` (or another
+published tag).
+
 ```sh
 mise run image
 podman volume create rtgo-data
