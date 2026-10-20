@@ -3,8 +3,6 @@ APP_ENV = "dev"
 SERVER_PORT = 8000
 DEBUG_LEVEL = "DEBUG"
 
-[tasks."dev:create-image"]
-run = 'podman build -t docker.io/tasuki/pi-rtgo:latest -f Containerfile.dev .'
 [tasks.image]
 run = 'podman build -t localhost/rtgo:latest -f Containerfile .'
 [tasks."katago:install"]
