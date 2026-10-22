@@ -5,6 +5,7 @@ import gleam/http.{Options, Post}
 import gleam/http/request
 import gleam/http/response
 import gleam/list
+import gleam/option.{None, Some}
 import gleam/time/duration
 import gleeunit/should
 import rtgo_server/game as running_game
@@ -55,6 +56,14 @@ fn details(send: Send, id: String) -> lobby_api.GameDetails {
   game
 }
 
+fn active_games(send: Send) -> List(lobby_api.GameMetadata) {
+  let response =
+    lobby_api.games_request(url)
+    |> send
+    |> read_json(lobby_api.list_games_response_decoder)
+  list.filter(response.games, fn(entry) { entry.phase != game.Finished })
+}
+
 pub fn finished_games_are_listed_by_start_time_newest_first_test() {
   let users = players.start(test_sign_key())
   let rooms = lobby.start()
@@ -77,10 +86,11 @@ pub fn finished_games_are_listed_by_start_time_newest_first_test() {
     let assert Ok(_) = running_game.pass(subject, "host")
     let assert Ok(_) = running_game.pass(subject, "guest")
   })
-  let lobby_api.ListGamesResponse(games) =
+  let lobby_api.ListGamesResponse(all_games, _) =
     lobby_api.games_request(url)
     |> test_support.send(users, rooms)
     |> read_json(lobby_api.list_games_response_decoder)
+  let games = list.filter(all_games, fn(entry) { list.contains(ids, entry.id) })
   should.equal(list.map(games, fn(game) { game.phase }), [
     game.Finished,
     game.Finished,
@@ -95,14 +105,9 @@ pub fn lobby_lifecycle_through_client_api_test() {
   let guest = register(send, "alice")
   let settings = game.Settings(9, game.TwoPlayerGame, game.Cooldown(3))
   let id = create(send, host, settings)
-  should.equal(
-    lobby_api.games_request(url)
-      |> send
-      |> read_json(lobby_api.list_games_response_decoder),
-    lobby_api.ListGamesResponse([
-      lobby_api.GameMetadata(id, game.Negotiating, 1, settings),
-    ]),
-  )
+  should.equal(active_games(send), [
+    lobby_api.GameMetadata(id, game.Negotiating, 1, settings, None),
+  ])
   should.equal(
     lobby_api.start_game_request(url, id, host)
       |> send
@@ -153,13 +158,11 @@ pub fn lobby_lifecycle_through_client_api_test() {
     details(send, id),
     lobby_api.GameDetails(..open, phase: game.Started),
   )
+  let assert [started] = active_games(send)
+  let assert Some(_) = started.started_at
   should.equal(
-    lobby_api.games_request(url)
-      |> send
-      |> read_json(lobby_api.list_games_response_decoder),
-    lobby_api.ListGamesResponse([
-      lobby_api.GameMetadata(id, game.Started, 2, settings),
-    ]),
+    started,
+    lobby_api.GameMetadata(id, game.Started, 2, settings, started.started_at),
   )
   should.equal(
     lobby_api.join_game_request(url, id, guest)
@@ -229,12 +232,7 @@ pub fn guests_can_leave_and_rejoin_but_only_host_can_cancel_test() {
   should.equal(send(lobby_api.game_request(url, id)).status, 404)
   should.equal(send(lobby_api.leave_game_request(url, id, guest)).status, 404)
   should.equal(send(lobby_api.cancel_game_request(url, id, host)).status, 404)
-  should.equal(
-    lobby_api.games_request(url)
-      |> send
-      |> read_json(lobby_api.list_games_response_decoder),
-    lobby_api.ListGamesResponse([]),
-  )
+  should.equal(active_games(send), [])
 }
 
 pub fn host_can_kick_and_handicap_waiting_players_test() {
@@ -349,12 +347,7 @@ pub fn invalid_settings_are_rejected_without_creating_rooms_test() {
     )
     |> send
   should.equal(unknown_type.status, 400)
-  should.equal(
-    lobby_api.games_request(url)
-      |> send
-      |> read_json(lobby_api.list_games_response_decoder),
-    lobby_api.ListGamesResponse([]),
-  )
+  should.equal(active_games(send), [])
 }
 
 pub fn mutations_require_a_valid_signed_unexpired_token_test() {

@@ -235,6 +235,11 @@ downloads are named `YYYY-MM-DD-HHMM-<game-code>.sgf`, e.g.
 directory isn't writable; later write failures are logged. Saves are asynchronous,
 so an abrupt kill can lose the most recent queued updates.
 
+The lobby shows game names with smaller UTC start dates underneath. Finished games are listed
+newest first, 20 per page, including saved recordings after a server restart.
+Previous/Next controls browse older games; open and running rooms stay visible.
+In-memory game data takes priority over disk archives with the same game code.
+
 When a game ends (or you open a finished game), its fullscreen board automatically
 becomes a replay at the final position, without changing URLs. Controls sit on the
 right in landscape and along the bottom in portrait, opposite the general menu:
@@ -277,7 +282,11 @@ viewers only understand the extra standard B/W moves in two-player recordings.
 mise run test
 ```
 
-Runs shared rules, server/API integration, and client update tests. Engine-backed
+Runs shared rules, server/API integration, and client update tests.
+Server tests use a fresh temporary SGF directory, overriding any inherited
+`SGF_DIR`, and remove it on exit (including failures). Run them through
+`mise run test:server` or `mise run test`, not directly with `gleam test`.
+Engine-backed
 scoring cases run when KataGo is installed at the production paths; otherwise
 those cases are skipped (the rule/fixture tests still run).
 

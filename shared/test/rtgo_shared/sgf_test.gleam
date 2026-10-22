@@ -52,6 +52,19 @@ pub fn multiplayer_round_trip_and_captures_test() {
   should.equal(dict.size(after.board.stones), 4)
 }
 
+pub fn listing_metadata_preserves_results_without_reconstructing_moves_test() {
+  let original = sgf.Record(..captured(), date: Some("2026-10-18"))
+  let assert Ok(metadata) = original |> sgf.encode |> sgf.decode_metadata
+  should.equal(metadata, sgf.Record(..original, moves: []))
+  should.equal(result.is_error(sgf.decode_metadata("not sgf")), True)
+  should.equal(
+    result.is_error(sgf.decode_metadata(
+      sgf.encode(original) |> string.replace("RTFORMAT[1]", "RTFORMAT[2]"),
+    )),
+    True,
+  )
+}
+
 pub fn start_date_round_trips_as_standard_dt_metadata_test() {
   let record = sgf.Record(..record(), date: Some("2026-10-18"))
   let source = sgf.encode(record)

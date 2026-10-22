@@ -110,6 +110,8 @@ button:disabled { opacity: 0.5; cursor: not-allowed; transform: none; box-shadow
   text-align: left;
 }
 .game-id { font-weight: 700; }
+.game-date { display: block; margin-top: 4px; font-size: 0.85em; font-weight: normal; color: #555; }
+.games-pagination { display: flex; justify-content: center; align-items: center; gap: 16px; margin-top: 16px; }
 .game-phase, .game-count { color: #555; }
 .game-settings { display: block; margin-top: 4px; font-weight: normal; color: #555; }
 .create-game, .create-game-savings { display: grid; grid-template-columns: minmax(0, 1fr); gap: 16px; }

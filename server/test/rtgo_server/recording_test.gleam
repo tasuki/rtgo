@@ -1,3 +1,4 @@
+import envoy
 import gleam/dict
 import gleam/http/request
 import gleam/http/response
@@ -51,6 +52,13 @@ fn state() -> game.State {
     started_utc: start_time(),
     record: sgf.Record(..state.record, date: Some("2026-10-18")),
   )
+}
+
+pub fn server_tests_use_the_isolated_recording_directory_test() {
+  let assert Ok(directory) = envoy.get("RTGO_TEST_SGF_DIR")
+  should.equal(recorder.directory(), directory)
+  should.equal(directory == "data/sgf", False)
+  should.equal(simplifile.is_directory(directory), Ok(True))
 }
 
 pub fn game_records_only_accepted_moves_with_elapsed_times_and_handicaps_test() {

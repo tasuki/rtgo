@@ -48,6 +48,8 @@ pub fn send(
     list.fold(headers, base_request, fn(req, header) {
       request.set_header(req, header.0, header.1)
     })
+  let server_request =
+    request.Request(..server_request, query: client_request.query)
   let server_response = router.handle(actor, lobby_actor, server_request)
   response.Response(
     status: server_response.status,

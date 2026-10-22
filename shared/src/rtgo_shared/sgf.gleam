@@ -359,6 +359,28 @@ fn check_structure(root: Node, nodes: List(Node)) -> Result(Nil, String) {
 }
 
 pub fn decode(source: String) -> Result(Replay, String) {
+  decode_with(source, fn(rest, record) {
+    replay_nodes(
+      rest,
+      record,
+      go.new_game(record.size),
+      [Frame(go.new_game(record.size), None)],
+      0,
+      0,
+    )
+  })
+}
+
+/// Decode roster/result metadata without reconstructing board positions. This
+/// validates SGF structure and root metadata, not move legality. Moves are empty.
+pub fn decode_metadata(source: String) -> Result(Record, String) {
+  decode_with(source, fn(_, record) { Ok(record) })
+}
+
+fn decode_with(
+  source: String,
+  with: fn(List(Node), Record) -> Result(a, String),
+) -> Result(a, String) {
   case string.byte_size(source) > 1_000_000 {
     True -> Error("SGF is too large (maximum 1 MB).")
     False -> {
@@ -472,14 +494,7 @@ pub fn decode(source: String) -> Result(Replay, String) {
                   date,
                   timing,
                 )
-              replay_nodes(
-                rest,
-                record,
-                go.new_game(size),
-                [Frame(go.new_game(size), None)],
-                0,
-                0,
-              )
+              with(rest, record)
             }
           }
         }

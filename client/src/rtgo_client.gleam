@@ -57,6 +57,9 @@ pub type Model {
     server_url: String,
     game: go.Game,
     lobby_games: List(lobby_api.GameMetadata),
+    finished_page: Int,
+    finished_has_more: Bool,
+    pending_finished_page: Option(Int),
     loading_lobby: Bool,
     lobby_loaded: Bool,
     current_game: Option(lobby_api.GameDetails),
@@ -102,6 +105,9 @@ pub fn initial_model(
     server_url: server_url,
     game: go.new_game(19),
     lobby_games: [],
+    finished_page: 0,
+    finished_has_more: False,
+    pending_finished_page: None,
     loading_lobby: False,
     lobby_loaded: False,
     current_game: None,
@@ -213,7 +219,10 @@ fn ping_server(server_url: String) -> Effect(Msg) {
 
 fn load_lobby_games(model: Model) -> Effect(Msg) {
   rsvp.send(
-    lobby_api.games_request(model.server_url),
+    lobby_api.games_page_request(
+      model.server_url,
+      option.unwrap(model.pending_finished_page, model.finished_page),
+    ),
     rsvp.expect_json(lobby_api.list_games_response_decoder(), fn(result) {
       GamesLoaded(model.page_version, result)
     }),
@@ -249,6 +258,7 @@ pub type Msg {
   GameColorChosen(Int, String, shared_player.Color, Result(Nil, rsvp.Error))
   LoggedInResponse(Result(auth.LogInResponse, rsvp.Error))
   GamesLoaded(Int, Result(lobby_api.ListGamesResponse, rsvp.Error))
+  FinishedPage(Int)
   GameLoaded(Int, Result(lobby_api.GetGameResponse, rsvp.Error))
   CreateGamePressed
   BoardSizeChanged(String)
@@ -444,6 +454,7 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           cooldown_drafts: dict.new(),
           loading_game: False,
           loading_lobby: False,
+          pending_finished_page: None,
           pending_action: False,
           saving_cooldown: False,
           after_save: None,
@@ -765,12 +776,42 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
       }
     GameColorChosen(_, _, _, Error(error)) ->
       action_failed(model, action_error(error))
+    FinishedPage(page) -> {
+      case model.route, model.lobby_loaded {
+        CreateJoinGame, True
+          if page >= 0
+          && !model.pending_action
+          && model.pending_finished_page == None
+          && {
+            page == model.finished_page - 1
+            || { page == model.finished_page + 1 && model.finished_has_more }
+          }
+        -> {
+          let model =
+            Model(
+              ..model,
+              pending_finished_page: Some(page),
+              page_version: model.page_version + 1,
+              loading_lobby: True,
+              load_error: None,
+            )
+          #(model, load_lobby_games(model))
+        }
+        _, _ -> #(model, effect.none())
+      }
+    }
     GamesLoaded(_, result) -> {
       let model = case result {
-        Ok(lobby_api.ListGamesResponse(games)) ->
+        Ok(lobby_api.ListGamesResponse(games, has_more)) ->
           Model(
             ..model,
             lobby_games: games,
+            finished_has_more: has_more,
+            finished_page: option.unwrap(
+              model.pending_finished_page,
+              model.finished_page,
+            ),
+            pending_finished_page: None,
             loading_lobby: False,
             lobby_loaded: True,
             load_error: None,
@@ -779,6 +820,7 @@ fn update_current(model: Model, msg: Msg) -> #(Model, Effect(Msg)) {
           Model(
             ..model,
             loading_lobby: False,
+            pending_finished_page: None,
             load_error: Some("Could not refresh the lobby. Retrying..."),
           )
       }
@@ -1497,6 +1539,24 @@ fn view_game(model: Model, game: lobby_api.GameMetadata) -> Element(Msg) {
     [
       html.span([attribute.class("game-id")], [
         html.text(id),
+        case game.started_at {
+          Some(started_at) ->
+            html.time(
+              [
+                attribute.class("game-date"),
+                attribute.attribute("datetime", started_at),
+              ],
+              [
+                html.text(
+                  string.slice(started_at, 0, 10)
+                  <> " · "
+                  <> string.slice(started_at, 11, 5)
+                  <> " UTC",
+                ),
+              ],
+            )
+          None -> html.text("")
+        },
         html.small([attribute.class("game-settings")], [
           html.text(settings_summary(game.settings)),
         ]),
@@ -1797,6 +1857,43 @@ fn view_lobby(model: Model) -> Element(Msg) {
           view_games(model, "Open for joining", open_games),
           view_games(model, "In progress", running_games),
           view_games(model, "Finished games", finished_games),
+          html.nav(
+            [
+              attribute.class("games-pagination"),
+              attribute.attribute("aria-label", "Finished games pages"),
+            ],
+            [
+              html.button(
+                [
+                  event.on_click(FinishedPage(model.finished_page - 1)),
+                  attribute.disabled(
+                    model.pending_action
+                    || model.pending_finished_page != None
+                    || model.finished_page == 0,
+                  ),
+                ],
+                [html.text("Previous")],
+              ),
+              html.span([attribute.attribute("aria-live", "polite")], [
+                html.text(case model.pending_finished_page {
+                  Some(page) ->
+                    "Loading page " <> int.to_string(page + 1) <> "…"
+                  None -> "Page " <> int.to_string(model.finished_page + 1)
+                }),
+              ]),
+              html.button(
+                [
+                  event.on_click(FinishedPage(model.finished_page + 1)),
+                  attribute.disabled(
+                    model.pending_action
+                    || model.pending_finished_page != None
+                    || !model.finished_has_more,
+                  ),
+                ],
+                [html.text("Next")],
+              ),
+            ],
+          ),
         ])
     },
   ])

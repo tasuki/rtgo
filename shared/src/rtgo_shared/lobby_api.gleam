@@ -2,7 +2,9 @@ import gleam/dict.{type Dict}
 import gleam/dynamic/decode
 import gleam/http.{Get, Post}
 import gleam/http/request
+import gleam/int
 import gleam/json
+import gleam/option.{type Option}
 import gleam/uri
 import rtgo_shared/game
 import rtgo_shared/player
@@ -15,6 +17,7 @@ pub type GameMetadata {
     phase: game.GamePhase,
     player_count: Int,
     settings: game.Settings,
+    started_at: Option(String),
   )
 }
 
@@ -32,7 +35,7 @@ pub type GameDetails {
 }
 
 pub type ListGamesResponse {
-  ListGamesResponse(games: List(GameMetadata))
+  ListGamesResponse(games: List(GameMetadata), has_more: Bool)
 }
 
 pub type CreateGameResponse {
@@ -52,7 +55,16 @@ pub type StartGameResponse {
 }
 
 pub fn games_request(server_url: String) -> request.Request(String) {
-  let assert Ok(uri) = uri.parse(server_url <> games_path)
+  games_page_request(server_url, 0)
+}
+
+/// Active rooms are always included; finished games are paginated in batches of 20.
+pub fn games_page_request(
+  server_url: String,
+  page: Int,
+) -> request.Request(String) {
+  let assert Ok(uri) =
+    uri.parse(server_url <> games_path <> "?page=" <> int.to_string(page))
   let assert Ok(req) = request.from_uri(uri)
   req |> request.set_method(Get)
 }
@@ -210,12 +222,14 @@ fn phase_decoder() -> decode.Decoder(game.GamePhase) {
 }
 
 pub fn game_metadata_to_json(metadata: GameMetadata) -> json.Json {
-  let GameMetadata(id:, phase:, player_count:, settings:) = metadata
+  let GameMetadata(id:, phase:, player_count:, settings:, started_at:) =
+    metadata
   json.object([
     #("id", json.string(id)),
     #("phase", phase_to_json(phase)),
     #("player_count", json.int(player_count)),
     #("settings", game.settings_to_json(settings)),
+    #("started_at", json.nullable(started_at, json.string)),
   ])
 }
 
@@ -224,7 +238,14 @@ pub fn game_metadata_decoder() -> decode.Decoder(GameMetadata) {
   use phase <- decode.field("phase", phase_decoder())
   use player_count <- decode.field("player_count", decode.int)
   use settings <- decode.field("settings", game.settings_decoder())
-  decode.success(GameMetadata(id:, phase:, player_count:, settings:))
+  use started_at <- decode.field("started_at", decode.optional(decode.string))
+  decode.success(GameMetadata(
+    id:,
+    phase:,
+    player_count:,
+    settings:,
+    started_at:,
+  ))
 }
 
 pub fn game_details_to_json(details: GameDetails) -> json.Json {
@@ -278,13 +299,17 @@ pub fn game_details_decoder() -> decode.Decoder(GameDetails) {
 }
 
 pub fn list_games_response_to_json(response: ListGamesResponse) -> json.Json {
-  let ListGamesResponse(games:) = response
-  json.object([#("games", json.array(games, game_metadata_to_json))])
+  let ListGamesResponse(games:, has_more:) = response
+  json.object([
+    #("games", json.array(games, game_metadata_to_json)),
+    #("has_more", json.bool(has_more)),
+  ])
 }
 
 pub fn list_games_response_decoder() -> decode.Decoder(ListGamesResponse) {
   use games <- decode.field("games", decode.list(game_metadata_decoder()))
-  decode.success(ListGamesResponse(games:))
+  use has_more <- decode.field("has_more", decode.bool)
+  decode.success(ListGamesResponse(games:, has_more:))
 }
 
 pub fn create_game_response_to_json(response: CreateGameResponse) -> json.Json {

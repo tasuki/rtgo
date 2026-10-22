@@ -46,8 +46,10 @@ pub fn concurrent_lobby_requests_with_long_game_histories_test() {
     Nil
   })
   list.each(list.range(1, 16), fn(_) {
-    let assert Ok(#(status, Ok(lobby_api.ListGamesResponse(games)))) =
+    let assert Ok(#(status, Ok(lobby_api.ListGamesResponse(all_games, _)))) =
       process.receive(replies, 5000)
+    let games =
+      list.filter(all_games, fn(entry) { entry.phase != settings.Finished })
     should.equal(status, 200)
     should.equal(list.length(games), 7)
     should.equal(

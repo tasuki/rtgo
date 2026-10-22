@@ -62,6 +62,44 @@ pub fn filename(id: String, started_at: timestamp.Timestamp) -> String {
   <> ".sgf"
 }
 
+pub type Archive {
+  Archive(id: String, filename: String, started_at: timestamp.Timestamp)
+}
+
+/// Enumerate only canonical recording filenames, without loading move histories.
+pub fn archives(directory: String) -> List(Archive) {
+  directory
+  |> simplifile.read_directory
+  |> result.unwrap([])
+  |> list.filter_map(fn(file) {
+    let prefix = string.slice(file, 0, 15)
+    let id = string.slice(file, 16, string.length(file) - 20)
+    case
+      valid_start_minute(prefix)
+      && string.slice(file, 15, 1) == "-"
+      && string.ends_with(file, ".sgf")
+      && safe_id(id)
+      && simplifile.is_file(directory <> "/" <> file) == Ok(True)
+    {
+      False -> Error(Nil)
+      True -> {
+        use started_at <- result.try(
+          timestamp.parse_rfc3339(
+            string.slice(prefix, 0, 10)
+            <> "T"
+            <> string.slice(prefix, 11, 2)
+            <> ":"
+            <> string.slice(prefix, 13, 2)
+            <> ":00Z",
+          )
+          |> result.replace_error(Nil),
+        )
+        Ok(Archive(id, file, started_at))
+      }
+    }
+  })
+}
+
 fn find_filename(directory: String, id: String) -> Result(String, Nil) {
   case safe_id(id) {
     False -> Error(Nil)

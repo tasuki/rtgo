@@ -97,8 +97,10 @@ Each started game gets `YYYY-MM-DD-HHMM-<room-id>.sgf`, for example
 `2026-10-18-1234-four.sgf`. The UTC start time, to the minute, is fixed for all
 subsequent saves and downloads, even if play/scoring crosses midnight. Archive
 lookup accepts only this timestamp-prefixed format, not date-only filenames;
-game URLs still use just the game code. The lobby lists finished games by start
-time, newest first (using the full timestamp, not just the filename's minute).
+game URLs still use just the game code. The lobby displays UTC start dates and
+lists finished games newest first, 20 per page, with Previous/Next controls.
+In-memory games use their full start timestamp; archived games use the filename's
+UTC start minute. Open and running rooms remain visible on every page.
 A per-game recorder process writes a complete snapshot to
 `YYYY-MM-DD-HHMM-<room-id>.sgf.tmp`, then atomically renames it, at start,
 after each accepted move or explicit pass, at finish, and after scoring. Rejections and polls do
@@ -110,6 +112,13 @@ a power-loss durability guarantee.
 Mount `/data` as a named volume or writable host directory to survive container
 replacement. Saved recording IDs are not reused after restart. Live rooms
 and account sessions are still in memory; recordings do not restore games.
+The lobby merges saved finished recordings with in-memory games, preferring
+memory for duplicate IDs. Missing, malformed, temporary, and interrupted files
+are skipped. Archives are loaded on demand, without starting game actors.
+`GET /api/games?page=0` (zero-based, default 0) returns all active rooms plus up
+to 20 finished games, with `has_more` indicating another finished-games page.
+Game metadata includes nullable `started_at` in RFC 3339 (null for unstarted rooms).
+Opening an archived game falls back to its SGF when no in-memory room exists.
 
 - `GET /api/games/<id>/sgf` downloads the current in-memory recording or a saved
   file after restart. Standalone development also supports the unprefixed route.

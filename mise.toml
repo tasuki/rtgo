@@ -38,8 +38,7 @@ run = [
 dir = "shared"
 run = "gleam test"
 [tasks."test:server"]
-dir = "server"
-run = "gleam test"
+run = "bash scripts/test-server.sh"
 [tasks."test:client"]
 dir = "client"
 run = "gleam test"

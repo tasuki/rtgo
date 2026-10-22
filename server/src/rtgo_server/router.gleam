@@ -1,13 +1,12 @@
 import gleam/dict
 import gleam/erlang/process
 import gleam/http.{Get, Post}
+import gleam/int
 import gleam/json
 import gleam/list
-import gleam/option.{None, Some}
-import gleam/order
 import gleam/string
-import gleam/time/timestamp
 import rtgo_server/game
+import rtgo_server/game_listing
 import rtgo_server/katago
 import rtgo_server/lobby
 import rtgo_server/players
@@ -87,23 +86,6 @@ fn play_response(
   }
 }
 
-/// Preserve chronological ordering when the client groups games by phase.
-fn newest_first(
-  a: #(String, lobby.Metadata),
-  b: #(String, lobby.Metadata),
-) -> order.Order {
-  let by_date = case { a.1 }.started_at, { b.1 }.started_at {
-    Some(a), Some(b) -> timestamp.compare(b, a)
-    Some(_), None -> order.Lt
-    None, Some(_) -> order.Gt
-    None, None -> order.Eq
-  }
-  case by_date {
-    order.Eq -> string.compare(a.0, b.0)
-    _ -> by_date
-  }
-}
-
 pub fn handle(
   players_actor: process.Subject(players.Message),
   lobby_actor: process.Subject(lobby.Message),
@@ -167,19 +149,22 @@ pub fn handle(
     }
 
     Get, _ if path_segments == games_segments -> {
-      let games =
-        lobby.list_games(lobby_actor)
-        |> dict.to_list()
-        |> list.sort(newest_first)
-        |> list.map(fn(entry) {
-          let #(id, lobby.Metadata(phase:, player_count:, settings:, ..)) =
-            entry
-          lobby_api.GameMetadata(id, phase, player_count, settings)
-        })
-      json_response_obj(
-        200,
-        lobby_api.list_games_response_to_json(lobby_api.ListGamesResponse(games)),
-      )
+      let page = case list.key_find(wisp.get_query(req), "page") {
+        Error(_) -> Ok(0)
+        Ok(value) -> int.parse(value)
+      }
+      case page {
+        Ok(page) if page >= 0 && page <= 1_000_000 -> {
+          let games =
+            game_listing.list_at(
+              recorder.directory(),
+              lobby.list_games(lobby_actor),
+              page,
+            )
+          json_response_obj(200, lobby_api.list_games_response_to_json(games))
+        }
+        _ -> json_response(400, [#("msg", json.string("Invalid page number"))])
+      }
     }
 
     Post, _ if path_segments == games_segments -> {

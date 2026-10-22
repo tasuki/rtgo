@@ -67,6 +67,7 @@ pub fn lobby_refresh_does_not_change_the_view_even_when_empty_test() {
           game.Negotiating,
           1,
           game.default_settings,
+          None,
         ),
       ],
     ],
@@ -74,7 +75,7 @@ pub fn lobby_refresh_does_not_change_the_view_even_when_empty_test() {
       let response =
         app.GamesLoaded(
           initial.page_version,
-          Ok(lobby_api.ListGamesResponse(games)),
+          Ok(lobby_api.ListGamesResponse(games, False)),
         )
       let loaded = step(initial, response)
       let html = loaded |> app.view |> element.to_string
@@ -119,18 +120,21 @@ pub fn lobby_groups_open_running_and_finished_games_test() {
       game.Negotiating,
       1,
       game.default_settings,
+      None,
     ),
     lobby_api.GameMetadata(
       "playing-room",
       game.Started,
       2,
       game.default_settings,
+      None,
     ),
     lobby_api.GameMetadata(
       "completed-room",
       game.Finished,
       3,
       game.default_settings,
+      None,
     ),
   ]
   let loaded =
@@ -138,7 +142,7 @@ pub fn lobby_groups_open_running_and_finished_games_test() {
       initial,
       app.GamesLoaded(
         initial.page_version,
-        Ok(lobby_api.ListGamesResponse(games)),
+        Ok(lobby_api.ListGamesResponse(games, False)),
       ),
     )
   let sections =
@@ -170,7 +174,10 @@ pub fn lobby_groups_open_running_and_finished_games_test() {
   let empty =
     step(
       loaded,
-      app.GamesLoaded(loaded.page_version, Ok(lobby_api.ListGamesResponse([]))),
+      app.GamesLoaded(
+        loaded.page_version,
+        Ok(lobby_api.ListGamesResponse([], False)),
+      ),
     )
   should.equal(
     string.contains(
@@ -188,16 +195,18 @@ pub fn finished_lobby_row_opens_the_game_instead_of_joining_test() {
       initial,
       app.GamesLoaded(
         initial.page_version,
-        Ok(
-          lobby_api.ListGamesResponse([
+        Ok(lobby_api.ListGamesResponse(
+          [
             lobby_api.GameMetadata(
               "done",
               game.Finished,
               2,
               game.default_settings,
+              None,
             ),
-          ]),
-        ),
+          ],
+          False,
+        )),
       ),
     )
   let clicked =
@@ -210,6 +219,87 @@ pub fn finished_lobby_row_opens_the_game_instead_of_joining_test() {
     |> simulate.event(query.element(query.class("game-row")), "click", [])
     |> simulate.model
   should.equal(clicked, Some(app.OpenGame("done")))
+}
+
+pub fn finished_pages_show_dates_and_ignore_stale_responses_test() {
+  let initial = model(app.CreateJoinGame)
+  let first =
+    lobby_api.GameMetadata(
+      "newest",
+      game.Finished,
+      2,
+      game.default_settings,
+      Some("2026-10-18T12:34:56Z"),
+    )
+  let loaded =
+    step(
+      initial,
+      app.GamesLoaded(
+        initial.page_version,
+        Ok(lobby_api.ListGamesResponse([first], True)),
+      ),
+    )
+  let html = loaded |> app.view |> element.to_string
+  should.equal(string.contains(html, "class=\"game-id\">newest<time"), True)
+  should.equal(string.contains(html, "2026-10-18 · 12:34 UTC"), True)
+  should.equal(string.contains(html, "datetime=\"2026-10-18T12:34:56Z\""), True)
+  let clicked =
+    simulate.application(
+      fn(_) { #(None, effect.none()) },
+      fn(_, msg) { #(Some(msg), effect.none()) },
+      fn(_) { app.view(loaded) },
+    )
+    |> simulate.start(Nil)
+    |> simulate.event(
+      query.element(query.tag("button") |> query.and(query.text("Next"))),
+      "click",
+      [],
+    )
+    |> simulate.model
+  should.equal(clicked, Some(app.FinishedPage(1)))
+  let loading = step(loaded, app.FinishedPage(1))
+  should.equal(loading.pending_finished_page, Some(1))
+  should.equal(loading.finished_page, 0)
+  should.equal(loading.lobby_games, [first])
+  should.equal(step(loading, app.FinishedPage(2)), loading)
+  should.equal(
+    step(
+      loading,
+      app.GamesLoaded(
+        loaded.page_version,
+        Ok(lobby_api.ListGamesResponse([], False)),
+      ),
+    ),
+    loading,
+  )
+  let older = lobby_api.GameMetadata(..first, id: "older")
+  let next =
+    step(
+      loading,
+      app.GamesLoaded(
+        loading.page_version,
+        Ok(lobby_api.ListGamesResponse([older], False)),
+      ),
+    )
+  should.equal(next.finished_page, 1)
+  should.equal(next.pending_finished_page, None)
+  should.equal(next.lobby_games, [older])
+  should.equal(step(next, app.FinishedPage(2)), next)
+  should.equal(
+    string.contains(element.to_string(app.view(next)), "Page 2"),
+    True,
+  )
+  let previous = step(next, app.FinishedPage(0))
+  should.equal(previous.pending_finished_page, Some(0))
+  let failed =
+    step(
+      previous,
+      app.GamesLoaded(previous.page_version, Error(rsvp.NetworkError)),
+    )
+  should.equal(failed.finished_page, 1)
+  should.equal(failed.lobby_games, [older])
+  should.equal(failed.pending_finished_page, None)
+  should.equal(step(failed, app.FinishedPage(0)).pending_finished_page, Some(0))
 }
 
 pub fn room_refresh_tracks_joins_and_start_without_blanking_the_room_test() {
@@ -275,7 +365,7 @@ pub fn navigation_discards_old_responses_actions_and_timers_even_on_revisit_test
   let stale_messages = [
     app.GameLoaded(old, Ok(room("a", game.Negotiating, ["alice"]))),
     app.GameLoaded(old, Error(rsvp.NetworkError)),
-    app.GamesLoaded(old, Ok(lobby_api.ListGamesResponse([]))),
+    app.GamesLoaded(old, Ok(lobby_api.ListGamesResponse([], False))),
     app.Refresh(old),
     app.GameCreated(old, Ok(lobby_api.CreateGameResponse("other"))),
     app.GameJoined(old, "other", Ok(lobby_api.JoinGameResponse(True))),
@@ -326,14 +416,20 @@ pub fn mutations_require_login_and_errors_allow_retry_without_losing_the_list_te
   should.equal(failed.pending_action, False)
   should.not_equal(failed.action_error, None)
   let games = [
-    lobby_api.GameMetadata("room", game.Negotiating, 1, game.default_settings),
+    lobby_api.GameMetadata(
+      "room",
+      game.Negotiating,
+      1,
+      game.default_settings,
+      None,
+    ),
   ]
   let refreshed =
     step(
       failed,
       app.GamesLoaded(
         failed.page_version,
-        Ok(lobby_api.ListGamesResponse(games)),
+        Ok(lobby_api.ListGamesResponse(games, False)),
       ),
     )
   should.equal(refreshed.lobby_games, games)
