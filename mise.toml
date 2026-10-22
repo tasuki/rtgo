@@ -1,3 +1,9 @@
+[tools]
+erlang = "28.2"
+rebar = "3.25.1"
+gleam = "1.14.0"
+watchexec = "2.3.2"
+
 [env]
 APP_ENV = "dev"
 SERVER_PORT = 8000
@@ -5,9 +11,12 @@ DEBUG_LEVEL = "DEBUG"
 
 [tasks.image]
 run = 'podman build -t localhost/rtgo:latest -f Containerfile .'
-[tasks."katago:install"]
-description = "Install KataGo and its network from an existing local RTGO image into /opt/katago"
-run = "bash scripts/install-katago.sh"
+[tasks.deploy]
+run = [
+  "sudo -n podman build -t rtgo -f Containerfile .",
+  "sudo -n systemctl restart rtgo",
+]
+
 [tasks."client-config"]
 dir = "client"
 run = "cp config.${APP_ENV}.gleam src/config.gleam"
@@ -49,8 +58,12 @@ run = "node --test test/drag_ffi_test.mjs"
 run = "bash scripts/test-install-katago.sh"
 [tasks.test]
 depends = ["test:shared", "test:server", "test:client", "test:drag-input", "test:katago-install"]
-
 [tasks."test:single-view"]
 description = "Test production scoring over 20 fresh-engine KataGo trials"
 dir = "server"
 run = "gleam run -m rtgo_server/single_view_adjudication_test"
+
+[tasks."katago:install"]
+description = "Install KataGo and its network from an existing local RTGO image into /opt/katago"
+run = "bash scripts/install-katago.sh"
+
